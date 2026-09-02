@@ -1,11 +1,25 @@
 # dubber ruck
 
 A local second opinion for Claude Code sessions, backed by Qwen3.6-35B on `clode`
-(llama-swap + llama.cpp). Standard-library Python, no dependencies.
+(llama-swap + llama.cpp). Standard-library Python 3.10+, no dependencies.
 
 The model is right about 70% of the time on code-review benchmarks, so the tool is
-built around that: every finding carries a confidence and a "verify by" line, and the
-footer reminds the reader that findings are hypotheses. Design and reasoning: `PLAN.md`.
+built around that: every finding carries a confidence and a "verify by" line, the
+tool checks that each quoted line really exists in what was sent, and the footer
+reminds the reader that findings are hypotheses. Design and reasoning: `PLAN.md`.
+
+## How it works
+
+```
+Claude Code session ──(skill)──> dubber-ruck CLI ──HTTP──> llama-swap on clode ──> llama.cpp / Qwen3.6-35B
+                                    │
+                                    ├─ etiquette: loaded model only, no silent swap, wait on the one slot
+                                    ├─ request: streaming, thinking on/off, rescue when reasoning runs long
+                                    └─ output: parse findings, ground quotes, vote, or score a plan
+```
+
+Nothing leaves the LAN. The server is unauthenticated and shared, so the CLI's guard
+rails are about being a good neighbour on one GPU slot as much as about correctness.
 
 ## Install
 
@@ -92,7 +106,21 @@ python3 tests/eval/pr_review_eval.py --runs 4
 Sends the `local_llm_tests` pr-review prompt through `review` and reports, per run,
 whether the two planted bugs were caught, whether the two known traps were fallen
 into, and how many findings were ungrounded. Run it after changing `prompts/review.md`.
-Each run occupies the slot for 2-3 minutes.
+Each run occupies the slot for 3-5 minutes. Results are written to
+`tests/eval/results/<date>-<prompt hash>.md`, so the history of prompt changes and
+their effect is in git; pass `--label` to say what changed.
+
+## Layout
+
+```
+dubber_ruck.py               the CLI, one file
+prompts/                     system prompts per mode: consult, review, duck, plan
+skills/dubber-ruck/SKILL.md  the Claude Code skill (symlinked into ~/.claude/skills)
+tests/                       offline unit tests, incl. an end-to-end fake llama-swap
+tests/eval/                  the benchmark replay and its recorded results
+install.sh                   symlinks
+PLAN.md                      design, measurements, decisions, build log
+```
 
 ## Guard rails
 

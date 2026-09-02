@@ -224,7 +224,8 @@ count across 4 runs, the same shape as the benchmark repo.
    trap 0/2, "sleep blocks the UI" trap 2/2. A general evidence rule for concurrency
    claims (name the goroutine/thread from the material or file it under unsure) was
    then added to the review prompt; one further run caught both bugs with 0 ungrounded
-   findings and explained correctly that Bubble Tea runs commands in their own goroutine.
+   findings and explained correctly that Bubble Tea runs commands in their own goroutine
+   (but see step 5: over four runs the rule did not hold, 3/4 still fell for it).
    That run also showed the reply can repeat the template per PR, so the parser now
    reads every Findings section, and the eval's trap regex no longer counts "without
    blocking" as a fall. One run is not proof; re-check with `--runs 4` before trusting
@@ -267,6 +268,18 @@ count across 4 runs, the same shape as the benchmark repo.
    reconstruction. `--dump-raw` was added so this kind of question can be answered
    without another 4-minute run.
 5. **Eval harness + README**, then a week of use before deciding on phase 2.
+   **Harness and README done 2026-09-01.** The replay now records each batch to
+   `tests/eval/results/<date>-<prompt hash>.md`. First four-run baseline with the
+   current prompt: PR 3 caught 4/4, PR 6 caught 4/4, ungrounded findings 0, template
+   followed 3/4 (one run fell back to the benchmark material's own per-PR format), no
+   `rand.Seed` demands (two hedged "older Go versions" notes, which the rubric accepts),
+   and the "sleep blocks the UI" trap **3/4**. So the concurrency-claim rule added in
+   step 2 did not fix that trap; the single clean run that followed it was luck. This
+   matches the model's benchmark precision (0/4 runs without a confident falsehood) and
+   is exactly why the skill's verify-first rule is the load-bearing part of the design.
+   The scorer itself was corrected the same day: it had missed two "prevents keypresses
+   / messages from being processed" phrasings and over-counted hedged `rand.Seed`
+   mentions. **The week of real use is the user's part.**
 
 ## Phase 2 candidates (decide after a week of use)
 
