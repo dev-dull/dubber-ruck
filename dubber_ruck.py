@@ -43,7 +43,7 @@ TYPICAL_GEN_NOTHINK = 700
 # Qwen's reasoning on a multi-part review can run past 8k tokens; the slot is 131k,
 # so the only cost of a generous budget is time (about 26 tok/s).
 MAX_TOKENS_THINK = 16_000
-MAX_TOKENS_NOTHINK = 2_000
+MAX_TOKENS_NOTHINK = 3_000  # no-think answers occasionally reason out loud; leave room to finish
 
 WARN_TOKENS = 20_000  # above this, prefill alone is >25 s
 OUTPUT_MARGIN = 1024  # tokens kept free below the slot ceiling
@@ -622,16 +622,25 @@ def parse_findings(md: str) -> list[Finding]:
         elif re.match(r"^\s*[-*]\s", line):
             current = None
     for f in findings:
-        quotes = []
-        for q in SPAN_RE.findall(f.text):
-            q = q.strip()
-            # Models sometimes copy the template's placeholder brackets: `<line>`.
-            if len(q) > 2 and q[0] == "<" and q[-1] == ">":
-                q = q[1:-1].strip()
-            if len(norm(q)) >= MIN_QUOTE:
-                quotes.append(q)
-        f.quotes = quotes
+        # The template is "LOCATION `quote` — EXPLANATION". Only spans before the
+        # explanation dash are the finding's evidence; code mentioned in the
+        # explanation (or in a ramble that follows) must not become the span that
+        # the grounding check tests.
+        head = re.split(r"\s+[—-]\s+", f.text, maxsplit=1)[0]
+        f.quotes = _spans(head) or _spans(f.text)
     return findings
+
+
+def _spans(text: str) -> list[str]:
+    quotes = []
+    for q in SPAN_RE.findall(text):
+        q = q.strip()
+        # Models sometimes copy the template's placeholder brackets: `<line>`.
+        if len(q) > 2 and q[0] == "<" and q[-1] == ">":
+            q = q[1:-1].strip()
+        if len(norm(q)) >= MIN_QUOTE:
+            quotes.append(q)
+    return quotes
 
 
 def ground(findings: list[Finding], material: str, ignore: set[str] = frozenset()) -> None:

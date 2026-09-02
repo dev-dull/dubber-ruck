@@ -110,6 +110,19 @@ class Ground(unittest.TestCase):
         self.assertTrue(good[0].grounded)
         self.assertFalse(bad[0].grounded)
 
+    def test_explanation_spans_do_not_override_the_quoted_line(self):
+        md = ("## Findings\n- [5/5] main.go `m.spun += 0.05` — compare with the old form "
+              "`for i, c := range m.rainPos { c.y += c.v; c.col = pick(c.col, i) }` which is not in the diff.\n"
+              "Wait, let me look closer at `func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { switch msg := msg.(type) {`\n")
+        f = dr.parse_findings(md)
+        self.assertEqual(f[0].quotes, ["m.spun += 0.05"])
+        dr.ground(f, MATERIAL)
+        self.assertTrue(f[0].grounded)
+
+    def test_falls_back_to_explanation_spans_when_head_has_none(self):
+        f = dr.parse_findings("## Findings\n- [4/5] somewhere — the loop `for i, c := range m.rainPos {` copies c")
+        self.assertEqual(f[0].quotes, ["for i, c := range m.rainPos {"])
+
     def test_attachment_names_do_not_ground(self):
         f = dr.parse_findings("## Findings\n- [5/5] `main.go` — vague")
         dr.ground(f, "### File: main.go\n" + MATERIAL, ignore={"main.go"})
