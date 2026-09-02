@@ -556,6 +556,8 @@ def build_user_message(question: str, attachments: list[tuple[str, str]]) -> str
 FINDING_RE = re.compile(r"^(\s*[-*]\s*)\[\s*(?:confidence\s*)?(\d)\s*/\s*5\s*\](.*)$", re.I)
 SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.M)
 SPAN_RE = re.compile(r"`+([^`]+?)`+")
+# "LOCATION `quote` — EXPLANATION": an em dash with or without spaces, a hyphen only when spaced.
+EXPLANATION_SPLIT_RE = re.compile(r"\s*—\s*|\s+-\s+")
 MIN_QUOTE = 4
 
 
@@ -632,8 +634,6 @@ def parse_findings(md: str) -> list[Finding]:
         f.quotes = _spans(head) or _spans(f.text)
     return findings
 
-
-EXPLANATION_SPLIT_RE = re.compile(r"\s*—\s*|\s+-\s+")
 
 
 def _spans(text: str) -> list[str]:
