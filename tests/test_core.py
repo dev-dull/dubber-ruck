@@ -22,7 +22,8 @@ class ChooseModel(unittest.TestCase):
     def test_uses_loaded_model_even_if_not_preferred(self):
         model, note = dr.choose_model(CONFIGURED, {"Qwen3-Coder-Next": "ready"}, None, "Qwen3.6-35B")
         self.assertEqual(model, "Qwen3-Coder-Next")
-        self.assertIn("instead of preferred", note)
+        self.assertTrue(note.startswith("WARNING"), note)
+        self.assertIn("not the preferred Qwen3.6-35B", note)
 
     def test_refuses_to_swap_without_flag(self):
         with self.assertRaises(dr.Refused):

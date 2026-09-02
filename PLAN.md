@@ -281,6 +281,30 @@ count across 4 runs, the same shape as the benchmark repo.
    / messages from being processed" phrasings and over-counted hedged `rand.Seed`
    mentions. **The week of real use is the user's part.**
 
+## Follow-up 2026-09-02: unprompted use did not happen
+
+After a day of real sessions the user reported that the duck was only ever used when
+asked for by name, even on a fresh project that began with a planning round. The
+skill description was not enough: Claude's auto-invocation from a listing is
+conservative, and this is the failure mode the plan's "risks" section should have
+predicted. Three layers replace it:
+
+1. **Hooks the harness enforces** (`hooks/hook.py`, registered in
+   `~/.claude/settings.json`): a quick review of the staged diff on every `git commit`
+   (measured 14 s), and a thinking plan check on `ExitPlanMode` against the newest
+   file in `~/.claude/plans`. Both inject context, never block, skip silently when the
+   diff is trivial, the slot is busy, the server is unreachable, the same content was
+   reviewed within the hour, or the loaded model is not the preferred one.
+2. **`~/.claude/CLAUDE.md`** carries the four checkpoints, so they sit in every
+   session's context instead of a skill listing.
+3. **Skill description rewritten** to lead with the checkpoints, plus `when_to_use`.
+
+Also reported: clode came up on Qwen3-Coder-Next. The llama-swap log shows the cause
+was two service restarts at 06:39 and 06:40 UTC and the Ansible-managed startup
+preload, not any client. The user's testing says Qwen3.6-35B is better unless speed
+matters, so the CLI now warns loudly when the preferred model is not the one loaded,
+and the hooks skip in that case. The preload itself is the homelab session's job.
+
 ## Phase 2 candidates (decide after a week of use)
 
 - **MCP wrapper** over the same core if Claude under-uses the CLI or the tool-call shape

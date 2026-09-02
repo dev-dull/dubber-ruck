@@ -237,7 +237,12 @@ def choose_model(
 
     if resident:
         if resident != preferred:
-            return resident, f"using loaded {resident} instead of preferred {preferred} (no swap)"
+            return resident, (
+                f"WARNING: answering with {resident}, not the preferred {preferred}, because that is what "
+                f"llama-swap has loaded and swapping would interrupt other users. Expect lower accuracy "
+                f"(on the review benchmark the preferred model scored 7.0/10, the alternative 4.8/10). "
+                f"Load {preferred} when the box is idle, or set DUBBER_RUCK_MODEL if the preference has changed."
+            )
         return resident, None
 
     if configured and preferred not in configured:

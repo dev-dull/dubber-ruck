@@ -1,7 +1,8 @@
 ---
 name: dubber-ruck
-description: Second opinion from a local model (Qwen3.6-35B on clode, nothing leaves the LAN) through the dubber-ruck CLI. Three modes - review a diff, consult on a specific question with files attached, or rubber-duck a problem you are stuck on. The model is about 70% accurate, so its findings are hypotheses to verify, never facts to relay. Invoke unprompted at checkpoints - before committing a non-trivial diff, after drafting a plan that touches 3+ files, when a fix has failed twice, before a risky or destructive change - and on demand when the user says "duck", "dubber ruck", "second opinion", "sanity check", "rubber duck", "what am I missing".
-argument-hint: [review|consult|duck] [question or focus]
+description: Use this skill PROACTIVELY, without being asked, at these checkpoints - (1) after drafting any plan or design that touches 3+ files or makes a design choice, before presenting it; (2) before committing a diff that is more than a few lines; (3) when the same bug has survived two attempted fixes; (4) before any destructive or hard-to-reverse step. Also whenever the user says "duck", "dubber ruck", "second opinion", "sanity check", "rubber duck", or "what am I missing". It gets a second opinion from a local model (Qwen3.6-35B on clode, nothing leaves the LAN) via the dubber-ruck CLI - review a diff, consult with files, rubber-duck a problem, or check a plan. About 70% accurate, so findings are hypotheses to verify, never facts to relay.
+when_to_use: Fresh project starting with a planning round; you just wrote a plan or PLAN.md; you are about to git commit; you have retried a fix twice; you are about to delete, migrate, or deploy; the user asks for a second opinion or a duck.
+argument-hint: [review|consult|duck|plan] [question, focus, or plan file]
 allowed-tools: Bash(dubber-ruck *)
 ---
 
@@ -34,6 +35,13 @@ Unprompted, at these checkpoints:
   production config.
 
 On demand whenever the user asks for a duck, a second opinion, or a sanity check.
+
+Two of these checkpoints are also enforced by hooks in `~/.claude/settings.json`:
+a `git commit` triggers a quick review of the staged diff, and leaving plan mode
+(`ExitPlanMode`) triggers a plan check. When a hook has already run, its output
+arrives as additional context; do not run the same review again by hand. Plans
+written outside plan mode (a PLAN.md you drafted in conversation) are not caught by
+the hook, so run `dubber-ruck plan` on those yourself before presenting them.
 
 Do not consult for typo fixes, comment edits, config value changes, renames, or
 anything the user needs in the next minute. Do not consult more than once per

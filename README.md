@@ -122,6 +122,39 @@ install.sh                   symlinks
 PLAN.md                      design, measurements, decisions, build log
 ```
 
+## Hooks: the checkpoints the harness enforces
+
+Left to its own judgment, a Claude Code session consults the duck only when asked, so
+the two checkpoints that can be detected mechanically are enforced by hooks in
+`~/.claude/settings.json` (`hooks/hook.py`):
+
+| event | what runs | default mode | typical time |
+|---|---|---|---|
+| `git commit` (PreToolUse on Bash) | `review` of the staged diff, or of the working tree for `commit -a` | quick (thinking off) | 15-60 s |
+| leaving plan mode (PreToolUse on ExitPlanMode) | `plan` on the newest file in `~/.claude/plans` | think | 2-5 min |
+
+The result is injected as context; the tool call itself is never blocked. Modes are
+set per hook with `DUBBER_RUCK_COMMIT_HOOK` and `DUBBER_RUCK_PLAN_HOOK`
+(`off`, `quick`, `think`). A hook skips silently, and says why in
+`~/.claude/dubber-ruck-hook.log`, when the diff is trivial (under 8 changed lines),
+the same content was reviewed within the hour, the slot is busy, the server is
+unreachable, the session itself runs on clode, or the loaded model is not the
+preferred one (a weaker reviewer is not worth the wait).
+
+Settings entry, for reference:
+
+```json
+"hooks": {"PreToolUse": [
+  {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 /path/to/dubber-ruck/hooks/hook.py commit", "if": "Bash(git commit *)", "timeout": 600}]},
+  {"matcher": "ExitPlanMode", "hooks": [{"type": "command", "command": "python3 /path/to/dubber-ruck/hooks/hook.py plan", "timeout": 900}]}
+]}
+```
+
+The other two checkpoints (a fix that has failed twice, a destructive step) and plans
+drafted outside plan mode cannot be detected by a hook. For those, the skill's
+description and a section in `~/.claude/CLAUDE.md` (in every session's context) tell
+Claude to consult proactively.
+
 ## Guard rails
 
 - Uses whichever model is already loaded. Refuses to trigger a model swap unless you
