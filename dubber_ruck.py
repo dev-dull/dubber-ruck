@@ -622,13 +622,18 @@ def parse_findings(md: str) -> list[Finding]:
         elif re.match(r"^\s*[-*]\s", line):
             current = None
     for f in findings:
-        # The template is "LOCATION `quote` — EXPLANATION". Only spans before the
+        # The template is "LOCATION `quote` — EXPLANATION". Spans before the
         # explanation dash are the finding's evidence; code mentioned in the
         # explanation (or in a ramble that follows) must not become the span that
-        # the grounding check tests.
-        head = re.split(r"\s+[—-]\s+", f.text, maxsplit=1)[0]
+        # the grounding check tests. Only when the head has no quote at all do we
+        # fall back to spans from the whole text. An em dash splits with or without
+        # surrounding spaces; a plain hyphen only when spaced, so `x-1` survives.
+        head = EXPLANATION_SPLIT_RE.split(f.text, maxsplit=1)[0]
         f.quotes = _spans(head) or _spans(f.text)
     return findings
+
+
+EXPLANATION_SPLIT_RE = re.compile(r"\s*—\s*|\s+-\s+")
 
 
 def _spans(text: str) -> list[str]:

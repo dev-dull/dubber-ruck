@@ -119,6 +119,12 @@ class Ground(unittest.TestCase):
         dr.ground(f, MATERIAL)
         self.assertTrue(f[0].grounded)
 
+    def test_unspaced_em_dash_still_splits_but_hyphen_in_code_does_not(self):
+        f = dr.parse_findings("## Findings\n- [5/5] main.go `m.spun += 0.05`—see `for i, c := range m.rainPos {` too")
+        self.assertEqual(f[0].quotes, ["m.spun += 0.05"])
+        g = dr.parse_findings("## Findings\n- [5/5] main.go `m.rainPos[i-1]` — off by one")
+        self.assertEqual(g[0].quotes, ["m.rainPos[i-1]"])
+
     def test_falls_back_to_explanation_spans_when_head_has_none(self):
         f = dr.parse_findings("## Findings\n- [4/5] somewhere — the loop `for i, c := range m.rainPos {` copies c")
         self.assertEqual(f[0].quotes, ["for i, c := range m.rainPos {"])
