@@ -306,6 +306,7 @@ class Result:
     prefill_tps: float = 0.0
     gen_tps: float = 0.0
     truncated: bool = False
+    reasoning_tokens: int = 0  # set for combined results; else derived from `reasoning`
     raw: dict = field(default_factory=dict)
 
 
@@ -662,6 +663,229 @@ def grounding_summary(findings: list[Finding]) -> str | None:
     return f"findings: {len(findings)} ({', '.join(parts)})"
 
 
+# --------------------------------------------------------------------------- votes
+
+
+@dataclass
+class Pass:
+    result: Result
+    content: str
+    findings: list[Finding]
+    verdict: str | None = None
+
+
+VERDICT_RE = re.compile(r"\*\*Verdict:\*\*\s*([A-Z][A-Z ]*[A-Z])", re.I)
+VERDICT_ORDER = ["SHIP", "FIX FIRST", "RETHINK"]  # least to most cautious
+
+
+def extract_verdict(md: str) -> str | None:
+    m = VERDICT_RE.search(md)
+    return m.group(1).strip().upper() if m else None
+
+
+def finding_key(f: Finding) -> str:
+    if f.quotes:
+        return norm(max(f.quotes, key=lambda q: len(norm(q))))
+    return norm(f.text.split("—")[0])[:80]
+
+
+def same_finding(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def merge_votes(passes: list[Pass]) -> tuple[str, str]:
+    """Combine N sampled passes into one findings list kept by majority.
+
+    Findings are clustered by their quoted line (or leading location text). A cluster
+    survives when a majority of passes contain it. Returns (markdown, summary_note).
+    """
+    n = len(passes)
+    needed = n // 2 + 1
+    clusters: list[dict] = []
+    for pi, p in enumerate(passes):
+        for f in p.findings:
+            k = finding_key(f)
+            for c in clusters:
+                if same_finding(k, c["key"]):
+                    c["members"].append((pi, f))
+                    if len(k) > len(c["key"]):
+                        c["key"] = k
+                    break
+            else:
+                clusters.append({"key": k, "members": [(pi, f)]})
+
+    def votes(c) -> int:
+        return len({pi for pi, _ in c["members"]})
+
+    def render(c, tag_votes: int) -> str:
+        best = max((f for _, f in c["members"]), key=lambda f: (f.grounded is True, f.confidence))
+        if best.grounded is True:
+            g = "[grounded]"
+        elif best.grounded is False:
+            g = "[UNGROUNDED: quoted line not found in the material]"
+        else:
+            g = "[unquoted]"
+        text = " ".join(best.text.split())
+        return f"- [confidence {best.confidence}/5] {g} [votes {tag_votes}/{n}] {text}"
+
+    kept = [c for c in clusters if votes(c) >= needed]
+    dropped = [c for c in clusters if votes(c) < needed]
+    kept.sort(key=lambda c: (-votes(c), -max(f.confidence for _, f in c["members"])))
+    dropped.sort(key=lambda c: -votes(c))
+
+    lines = ["## Findings"]
+    lines += [render(c, votes(c)) for c in kept] or ["- none agreed by a majority of runs"]
+    if dropped:
+        lines += ["", "## Dropped (minority of runs)"]
+        lines += [render(c, votes(c)) for c in dropped]
+
+    verdicts = [p.verdict for p in passes if p.verdict]
+    majority_verdict = None
+    if verdicts:
+        counts = {v: verdicts.count(v) for v in set(verdicts)}
+        top = max(counts.values())
+        tied = [v for v, k in counts.items() if k == top]
+        majority_verdict = max(tied, key=lambda v: VERDICT_ORDER.index(v) if v in VERDICT_ORDER else -1)
+    answer_src = next((p for p in passes if p.verdict == majority_verdict), passes[0])
+    answer = split_sections(answer_src.content).get("answer", "").strip()
+    answer = VERDICT_RE.sub("", answer).strip()
+    lines += ["", "## Answer"]
+    if majority_verdict:
+        others = [f"{k} said {v}" for v, k in sorted(((v, verdicts.count(v)) for v in set(verdicts)), key=lambda x: -x[1]) if v != majority_verdict]
+        lines.append(f"**Verdict:** {majority_verdict} ({verdicts.count(majority_verdict)}/{n} runs" + (f"; {', '.join(others)}" if others else "") + ")")
+    if answer:
+        lines.append(answer)
+
+    unsure: list[str] = []
+    for p in passes:
+        for ln in split_sections(p.content).get("unsure about", "").splitlines():
+            ln = ln.strip()
+            if ln and ln.lower() not in ("none", "- none", "nothing") and ln not in unsure:
+                unsure.append(ln)
+    lines += ["", "## Unsure about"]
+    lines += unsure or ["none"]
+
+    summary = f"votes {n}: {len(kept)} finding(s) kept by majority, {len(dropped)} dropped"
+    return "\n".join(lines) + "\n", summary
+
+
+# --------------------------------------------------------------------------- plan
+
+
+PLAN_QUESTIONS = [
+    # (id, key, category, question). category: "blocking" (YES is a concern),
+    # "attention" (YES needs a note), "info" (free text).
+    (1, "unread-files", "blocking", "Does the plan modify, delete, or depend on the behaviour of any file, module, or system that it never says it read or inspected?"),
+    (2, "unverified-claims", "blocking", "Does the plan state or assume a result (tests pass, behaviour is correct, performance is acceptable, something is unused) without a step that actually produces or checks that result?"),
+    (3, "unchecked-assumption", "blocking", "Does the plan rest on an assumption that is presented as fact but never checked, such that if the assumption is false the plan fails or does damage? Name the assumption."),
+    (4, "no-rollback", "blocking", "Does the plan include a step that is hard to reverse (deleting data, migrating a schema, deploying, changing shared infrastructure or configuration) without saying how to roll it back?"),
+    (5, "interface-change", "attention", "Does the plan change a public interface, API, schema, data format, or persisted state that something outside the plan depends on?"),
+    (6, "scope-mismatch", "attention", "Does the plan's scope differ from its stated goal, either doing work the goal does not need or leaving part of the goal undone?"),
+    (7, "simpler-alternative", "attention", "Is there a clearly simpler way to reach the same goal that the plan does not mention?"),
+    (8, "riskiest-step", "info", "Which single step is most likely to fail or cause damage, and why? Free text."),
+]
+
+PLAN_BLOCK_RE = re.compile(r"^##\s*Q(\d+)\b[^\n]*\n(.*?)(?=^##\s|\Z)", re.M | re.S)
+PLAN_ANSWER_RE = re.compile(r"\*\*Answer:\*\*\s*(.*)")
+PLAN_EVIDENCE_RE = re.compile(r"\*\*Evidence:\*\*\s*(.*)", re.S)
+
+
+@dataclass
+class PlanAnswer:
+    qid: int
+    key: str
+    category: str
+    answer: str  # YES | NO | UNCLEAR | free text | MISSING
+    evidence: str
+    grounded: bool | None = None
+
+
+def render_questions() -> str:
+    return "\n".join(f"Q{qid} {key}: {text}" for qid, key, _, text in PLAN_QUESTIONS)
+
+
+def parse_plan_answers(md: str) -> list[PlanAnswer]:
+    found = {}
+    for m in PLAN_BLOCK_RE.finditer(md):
+        qid = int(m.group(1))
+        body = m.group(2)
+        am = PLAN_ANSWER_RE.search(body)
+        em = PLAN_EVIDENCE_RE.search(body)
+        raw = (am.group(1).strip() if am else "").strip()
+        evidence = " ".join(em.group(1).split()) if em else ""
+        found[qid] = (raw, evidence)
+    out = []
+    for qid, key, cat, _ in PLAN_QUESTIONS:
+        raw, evidence = found.get(qid, ("", ""))
+        if cat == "info":
+            answer = raw or "MISSING"
+        else:
+            head = raw.split()[0].strip("*.:,").upper() if raw else ""
+            answer = head if head in ("YES", "NO", "UNCLEAR") else ("MISSING" if not raw else "UNCLEAR")
+            if head not in ("YES", "NO", "UNCLEAR") and raw:
+                evidence = (raw + " " + evidence).strip()
+        out.append(PlanAnswer(qid, key, cat, answer, evidence))
+    return out
+
+
+def ground_plan(answers: list[PlanAnswer], material: str) -> None:
+    for a in answers:
+        f = Finding(confidence=0, text=a.evidence)
+        f.quotes = [q.strip("<> ") for q in SPAN_RE.findall(a.evidence) if len(norm(q)) >= MIN_QUOTE]
+        ground([f], material)
+        a.grounded = f.grounded
+
+
+def plan_verdict(answers: list[PlanAnswer]) -> tuple[str, list[PlanAnswer], list[PlanAnswer], list[PlanAnswer]]:
+    """Code decides. Returns (verdict, concerns, attention, unclear)."""
+    concerns = [a for a in answers if a.category == "blocking" and a.answer == "YES"]
+    attention = [a for a in answers if a.category == "attention" and a.answer == "YES"]
+    unclear = [a for a in answers if a.category != "info" and a.answer in ("UNCLEAR", "MISSING")]
+    if concerns:
+        verdict = f"NOT READY: {len(concerns)} concern(s) to resolve before executing"
+    elif attention or unclear:
+        verdict = f"READY WITH NOTES: {len(attention)} point(s) to note, {len(unclear)} question(s) the plan does not answer"
+    else:
+        verdict = "READY: no concerns found (a clean sheet from a ~70% reviewer is not a guarantee)"
+    return verdict, concerns, attention, unclear
+
+
+def render_plan_report(answers: list[PlanAnswer], model_unsure: str) -> tuple[str, str]:
+    verdict, concerns, attention, unclear = plan_verdict(answers)
+
+    def gtag(a: PlanAnswer) -> str:
+        if a.grounded is True:
+            return "[grounded]"
+        if a.grounded is False:
+            return "[UNGROUNDED: quote not found in the plan]"
+        return "[unquoted]"
+
+    def item(a: PlanAnswer) -> str:
+        return f"- Q{a.qid} {a.key}: {a.answer} {gtag(a)} {a.evidence}".rstrip()
+
+    lines = [f"# Plan check: {verdict}", "", "| # | question | answer |", "|---|---|---|"]
+    for a in answers:
+        short = a.answer if a.category != "info" else "(see below)"
+        lines.append(f"| Q{a.qid} | {a.key} | {short} |")
+    lines += ["", "## Concerns (resolve before executing)"]
+    lines += [item(a) for a in concerns] or ["- none"]
+    lines += ["", "## Attention"]
+    lines += [item(a) for a in attention] or ["- none"]
+    lines += ["", "## Questions the plan does not answer"]
+    lines += [item(a) for a in unclear] or ["- none"]
+    risk = next((a for a in answers if a.category == "info"), None)
+    lines += ["", "## Riskiest step (model's view)"]
+    lines.append(f"{risk.answer} {risk.evidence}".strip() if risk else "MISSING")
+    lines += ["", "## Unsure about (model's own)"]
+    lines.append(model_unsure.strip() or "nothing")
+    g = sum(1 for a in answers if a.grounded is True)
+    u = sum(1 for a in answers if a.grounded is False)
+    summary = f"plan check: {len(concerns)} concern(s), {len(attention)} attention, {len(unclear)} unclear; evidence grounded {g}, ungrounded {u}"
+    return "\n".join(lines) + "\n", summary
+
+
 # --------------------------------------------------------------------------- git
 
 
@@ -730,7 +954,7 @@ def footer(res: Result, think: bool, note: str | None = None) -> str:
         res.model.split("/")[-1] if "/" in res.model else res.model,
         fmt_duration(res.wall),
         f"prompt {res.prompt_tokens} tok" + (f" (cached {res.cached_tokens})" if res.cached_tokens else ""),
-        f"output {res.completion_tokens} tok" + (f" (reasoning ~{estimate_tokens(res.reasoning)})" if res.reasoning else ""),
+        f"output {res.completion_tokens} tok" + (f" (reasoning ~{res.reasoning_tokens or estimate_tokens(res.reasoning)})" if (res.reasoning or res.reasoning_tokens) else ""),
         "thinking on" if think else "thinking off",
     ]
     lines = ["---", " · ".join(bits)]
@@ -835,9 +1059,9 @@ def resolve_think(args, default: bool) -> bool:
     return default
 
 
-def run_mode(args, *, prompt_name: str, think: bool, question: str, attachments: list[tuple[str, str]], check_grounding: bool) -> int:
-    """Shared body of consult / review / duck: size check, etiquette, request, output."""
-    system = load_prompt(prompt_name)
+def run_mode(args, *, prompt_name: str, think: bool, question: str, attachments: list[tuple[str, str]], check_grounding: bool, plan_render=None, system: str | None = None) -> int:
+    """Shared body of consult / review / duck / plan: size check, etiquette, request(s), output."""
+    system = system if system is not None else load_prompt(prompt_name)
     user = build_user_message(question, attachments)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     prompt_tokens = estimate_tokens(system) + estimate_tokens(user)
@@ -864,35 +1088,69 @@ def run_mode(args, *, prompt_name: str, think: bool, question: str, attachments:
             f"~{prompt_tokens} input tokens + {max_tokens} output exceeds the {n_ctx}-token slot. "
             f"Send less, or lower --max-tokens."
         )
-    log(f"{model}: sending ~{prompt_tokens} tokens, thinking {'on' if think else 'off'}; expect ~{fmt_duration(estimate_seconds(prompt_tokens, think))}")
+    votes = max(1, int(getattr(args, "votes", 1) or 1))
+    est = estimate_seconds(prompt_tokens, think) * votes
+    log(f"{model}: sending ~{prompt_tokens} tokens, thinking {'on' if think else 'off'}"
+        + (f", {votes} votes" if votes > 1 else "") + f"; expect ~{fmt_duration(est)}")
 
-    try:
-        res = chat(server, model, messages, think=think, max_tokens=max_tokens, timeout=timeout, temperature=args.temperature, seed=args.seed, idle_timeout=args.idle_timeout)
-    except EmptyOutput as e:
-        cut = getattr(e, "result", None)
-        if not (think and cut and cut.reasoning and not args.no_rescue):
-            raise
-        log(f"reasoning used the whole {max_tokens}-token budget; asking for the answer from its notes (thinking off)")
-        res = rescue(server, model, messages, cut, timeout=DEFAULT_TIMEOUT_NOTHINK)
-        note = " · ".join(x for x in ("answer written from cut-off reasoning notes", note) if x)
+    material = "\n".join(text for _, text in attachments)
+    ignore = {norm(name) for name, _ in attachments}
+    base_seed = args.seed if args.seed is not None else int(time.time()) % 100_000
+    temperature = args.temperature if args.temperature is not None else (0.7 if votes > 1 else None)
 
-    if args.dump_reasoning:
-        Path(args.dump_reasoning).write_text(res.reasoning, encoding="utf-8")
-        log(f"reasoning written to {args.dump_reasoning}")
+    passes: list[Pass] = []
+    notes: list[str] = [note] if note else []
+    for i in range(votes):
+        seed = (base_seed + i) if (votes > 1 or args.seed is not None) else None
+        try:
+            res = chat(server, model, messages, think=think, max_tokens=max_tokens, timeout=timeout, temperature=temperature, seed=seed, idle_timeout=args.idle_timeout)
+        except EmptyOutput as e:
+            cut = getattr(e, "result", None)
+            if not (think and cut and cut.reasoning and not args.no_rescue):
+                raise
+            log(f"reasoning used the whole {max_tokens}-token budget; asking for the answer from its notes (thinking off)")
+            res = rescue(server, model, messages, cut, timeout=DEFAULT_TIMEOUT_NOTHINK)
+            notes.append("answer written from cut-off reasoning notes" + (f" (vote {i + 1})" if votes > 1 else ""))
+        if args.dump_reasoning:
+            path = args.dump_reasoning if votes == 1 else f"{args.dump_reasoning}.{i + 1}"
+            Path(path).write_text(res.reasoning, encoding="utf-8")
+            log(f"reasoning written to {path}")
+        findings: list[Finding] = []
+        content = res.content
+        if check_grounding:
+            findings = parse_findings(content)
+            ground(findings, material, ignore=ignore)
+            content = annotate(content, findings)
+        passes.append(Pass(res, content, findings, extract_verdict(res.content)))
+        if votes > 1:
+            log(f"vote {i + 1}/{votes} done in {fmt_duration(res.wall)}: {len(findings)} finding(s)" + (f", verdict {passes[-1].verdict}" if passes[-1].verdict else ""))
 
-    content = res.content
-    summary = None
-    if check_grounding:
-        findings = parse_findings(content)
-        material = "\n".join(text for _, text in attachments)
-        ground(findings, material, ignore={norm(name) for name, _ in attachments})
-        content = annotate(content, findings)
-        summary = grounding_summary(findings)
+    if plan_render is not None:
+        content, summary = plan_render(passes[0].result.content, material)
+    elif votes > 1:
+        content, summary = merge_votes(passes)
+    else:
+        content, summary = passes[0].content, grounding_summary(passes[0].findings)
+
+    combined = Result(
+        content=content,
+        reasoning="",
+        finish_reason=passes[-1].result.finish_reason,
+        model=passes[0].result.model,
+        wall=sum(p.result.wall for p in passes),
+        prompt_tokens=passes[0].result.prompt_tokens,
+        cached_tokens=passes[0].result.cached_tokens,
+        completion_tokens=sum(p.result.completion_tokens for p in passes),
+        reasoning_tokens=sum(estimate_tokens(p.result.reasoning) for p in passes),
+        truncated=any(p.result.truncated for p in passes),
+    )
+    if votes > 1:
+        notes.append("runs: " + " + ".join(fmt_duration(p.result.wall) for p in passes))
 
     print(content)
     if not args.raw:
         print()
-        print(footer(res, think, " · ".join(x for x in (summary, note) if x) or None))
+        print(footer(combined, think, " · ".join(x for x in [summary, *notes] if x) or None))
     return 0
 
 
@@ -917,6 +1175,30 @@ def cmd_review(args) -> int:
     if args.focus:
         question += f" Focus on: {args.focus.strip()}"
     return run_mode(args, prompt_name="review", think=resolve_think(args, True), question=question, attachments=attachments, check_grounding=True)
+
+
+def cmd_plan(args) -> int:
+    if args.stdin:
+        plan_name, plan_text = "plan (stdin)", sys.stdin.read()
+    elif args.plan:
+        plan_name, plan_text = read_attachment(args.plan)
+        plan_name = f"plan: {plan_name}"
+    else:
+        raise DuckError("give the plan: dubber-ruck plan PLAN.md, or --stdin")
+    if not plan_text.strip():
+        raise DuckError("the plan is empty")
+    attachments = [(plan_name, plan_text)] + [read_attachment(f) for f in args.file]
+    system = load_prompt("plan").replace("{QUESTIONS}", render_questions())
+
+    def render(content: str, material: str) -> tuple[str, str]:
+        answers = parse_plan_answers(content)
+        ground_plan(answers, material)
+        unsure = split_sections(content).get("unsure about", "")
+        return render_plan_report(answers, unsure)
+
+    return run_mode(args, prompt_name="plan", system=system, think=resolve_think(args, True),
+                    question="Answer the fixed questions about the plan above, in order.",
+                    attachments=attachments, check_grounding=False, plan_render=render)
 
 
 def cmd_duck(args) -> int:
@@ -972,6 +1254,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("question", nargs="?", help="the question (omit to get a general review of the attachments)")
     c.add_argument("-f", "--file", action="append", default=[], metavar="FILE", help="attach a text file ('-' for stdin); repeatable")
     c.add_argument("--stdin", action="store_true", help="attach stdin")
+    c.add_argument("--votes", type=int, default=1, metavar="N", help="sample N times and keep findings a majority agree on (N× slower)")
     add_generation(c)
     add_common(c)
     c.set_defaults(fn=cmd_consult)
@@ -986,9 +1269,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--with-files", action="store_true", help="also attach the full current contents of touched files")
     r.add_argument("--focus", metavar="TEXT", help="what to pay particular attention to")
     r.add_argument("-f", "--file", action="append", default=[], metavar="FILE", help="extra text file for context; repeatable")
+    r.add_argument("--votes", type=int, default=1, metavar="N", help="sample N times and keep findings a majority agree on (N× slower)")
     add_generation(r)
     add_common(r)
     r.set_defaults(fn=cmd_review)
+
+    pl = sub.add_parser("plan", help="checkable-question review of a plan; the CLI decides the verdict")
+    pl.add_argument("plan", nargs="?", metavar="PLAN.md", help="the plan file")
+    pl.add_argument("--stdin", action="store_true", help="read the plan from stdin")
+    pl.add_argument("-f", "--file", action="append", default=[], metavar="FILE", help="context file the plan refers to; repeatable")
+    add_generation(pl)
+    add_common(pl)
+    pl.set_defaults(fn=cmd_plan)
 
     d = sub.add_parser("duck", help="rubber duck: assumptions, questions, hypotheses (no solution, fast)")
     d.add_argument("problem", nargs="?", help="what you are stuck on, in your own words")

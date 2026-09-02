@@ -240,7 +240,19 @@ count across 4 runs, the same shape as the benchmark repo.
    the system template once, so material is now framed as data with the format
    restated after it.
 3. **Skill + install script**: write SKILL.md, symlink, then use it for real from a
-   Claude session on another project and fix what is awkward. *Short.*
+   Claude session on another project and fix what is awkward. **Done 2026-09-01.**
+   Trialled from a fresh `claude -p` session in a scratch repo with a planted bug (a
+   `dataclasses.replace()` result assigned to the loop variable and dropped). Trial 1
+   exposed a gap: the session backgrounded the review, verified the bug itself, then
+   ended its turn promising to report later, and the review was killed with the
+   session. The skill now says to background a consult only when there is other work,
+   and otherwise to wait in the foreground with a 600 s timeout. Trial 2: skill
+   triggered on "second opinion", ran `review --focus ...`, blocked on the result, the
+   duck returned one finding at 5/5, grounded, naming the exact line and mechanism;
+   the session verified it independently with a before/after run, attributed the
+   finding to dubber ruck, dismissed the duck's two inapplicable questions with
+   reasons, and answered "don't commit yet" with the one-line fix. Round trip 1.8 min
+   on the duck side.
 4. **`--votes` and `plan`**: vote merge by location, checkable-question plan mode with
    CLI-side summary. *Half a day.*
 5. **Eval harness + README**, then a week of use before deciding on phase 2.

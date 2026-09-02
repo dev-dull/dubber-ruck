@@ -10,9 +10,16 @@ footer reminds the reader that findings are hypotheses. Design and reasoning: `P
 ## Install
 
 ```
-./install.sh          # symlinks ~/bin/dubber-ruck (and the skill, once it exists)
+./install.sh          # symlinks ~/bin/dubber-ruck and ~/.claude/skills/dubber-ruck
 dubber-ruck status    # what is loaded, is the slot busy
 ```
+
+The skill (`skills/dubber-ruck/SKILL.md`) is what makes every Claude Code session use
+the tool well: when to consult unprompted, how to run thinking calls in the background,
+and the rules for treating a 70%-accurate reviewer's output (verify before acting,
+discard ungrounded findings, attribute by name, the user's instructions win). It
+injects `dubber-ruck status` at load time so Claude sees the slot state before
+deciding. Type `/dubber-ruck` in a session to invoke it directly.
 
 Configuration is by environment variable:
 
@@ -27,9 +34,10 @@ Configuration is by environment variable:
 
 ```
 dubber-ruck status  [--probe] [--json]
-dubber-ruck consult "question" [-f FILE ...] [--stdin]
-dubber-ruck review  [--staged | --range A..B | --commit REV | --stdin] [--focus TEXT] [--with-files]
+dubber-ruck consult "question" [-f FILE ...] [--stdin] [--votes N]
+dubber-ruck review  [--staged | --range A..B | --commit REV | --stdin] [--focus TEXT] [--with-files] [--votes N]
 dubber-ruck duck    "what I am stuck on" [-f FILE ...]
+dubber-ruck plan    PLAN.md [-f CONTEXT ...]
 ```
 
 - **consult** asks a specific question, with files as context. Thinking on by default.
@@ -39,6 +47,20 @@ dubber-ruck duck    "what I am stuck on" [-f FILE ...]
 - **duck** is the rubber duck: it names the assumptions in your problem statement,
   asks questions, ranks hypotheses, and suggests the cheapest next check. It does not
   solve anything. Thinking off by default, so it answers in about 20-30 seconds.
+
+- **plan** asks eight fixed, checkable questions about a plan (files it never read,
+  claims it never verifies, assumptions stated as fact, irreversible steps without a
+  rollback, interface changes, scope, a simpler alternative, the riskiest step). Each
+  answer must quote the plan, and the CLI, not the model, turns the answers into a
+  verdict: NOT READY, READY WITH NOTES, or READY. This sidesteps the rubber-stamp
+  problem: an open "is this plan good?" gets approved every time.
+
+**`--votes N`** (consult and review) samples the model N times with different seeds
+and keeps only findings a majority of runs agree on; the rest are listed under
+"Dropped". The verdict is the majority verdict, ties going to the cautious side. It
+costs N times the wall time, so use it when a decision hinges on whether something is
+really a bug. With per-sample recall around 75%, three votes surface a real bug about
+84% of the time and one-off hallucinations mostly fall out.
 
 Thinking mode is slower and more accurate: expect 1-3 minutes for a few thousand
 tokens of input. `--no-think` and `--think` override the per-mode default.

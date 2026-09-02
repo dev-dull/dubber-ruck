@@ -143,6 +143,37 @@ class FakeServerTests(unittest.TestCase):
         self.assertEqual(rc, 5)
         self.assertIn("max_tokens", err)
 
+    def test_votes_make_n_calls_with_distinct_seeds_and_merge(self):
+        rc, out, err = self.run_cli("consult", "q", "-f", str(self.material), "--votes", "2", "--seed", "7", "-q")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(FakeSwap.calls), 2)
+        self.assertEqual([c["seed"] for c in FakeSwap.calls], [7, 8])
+        self.assertEqual(FakeSwap.calls[0]["temperature"], 0.7)
+        self.assertIn("[votes 2/2]", out)
+        self.assertIn("votes 2: 2 finding(s) kept by majority, 0 dropped", out)
+        self.assertIn("runs: ", out)
+
+    def test_plan_mode_renders_code_decided_verdict(self):
+        plan = Path(__file__).parent / "_fake_plan.md"
+        plan.write_text("1. Delete the old table.\n2. Run the tests.\n")
+        old = FakeSwap.reply
+        FakeSwap.reply = ("## Q1 unread-files\n**Answer:** NO\n**Evidence:** `Run the tests.` — fine\n\n"
+                          "## Q4 no-rollback\n**Answer:** YES\n**Evidence:** `Delete the old table.` — no rollback\n\n"
+                          "## Q8 riskiest-step\n**Answer:** step 1\n\n## Unsure about\nnothing\n")
+        try:
+            rc, out, err = self.run_cli("plan", str(plan), "-q")
+        finally:
+            FakeSwap.reply = old
+            plan.unlink(missing_ok=True)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("# Plan check: NOT READY: 1 concern(s)", out)
+        self.assertIn("- Q4 no-rollback: YES [grounded] `Delete the old table.`", out)
+        self.assertIn("| Q2 | unverified-claims | MISSING |", out)
+        self.assertIn("Q2 unverified-claims: MISSING", out)
+        sysmsg = FakeSwap.calls[-1]["messages"][0]["content"]
+        self.assertIn("Q4 no-rollback:", sysmsg)
+        self.assertNotIn("{QUESTIONS}", sysmsg)
+
     def test_status_reports_loaded_and_idle(self):
         rc, out, _ = self.run_cli("status")
         self.assertEqual(rc, 0)
