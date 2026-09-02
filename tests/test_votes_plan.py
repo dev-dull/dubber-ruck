@@ -120,6 +120,13 @@ class Plan(unittest.TestCase):
         self.assertTrue(a[3].grounded)  # Q4 quote is in the plan
         self.assertTrue(a[0].grounded)
 
+    def test_evidence_with_plan_backticks_inside_grounds(self):
+        plan = "2. Assume nobody reads `/v1/export` any more and remove it.\n"
+        reply = "## Q2 unverified-claims\n**Answer:** YES\n**Evidence:** `Assume nobody reads `/v1/export` any more and remove it.` — asserted, never checked.\n"
+        a = dr.parse_plan_answers(reply)
+        dr.ground_plan(a, plan)
+        self.assertTrue(a[1].grounded)
+
     def test_ready_when_clean(self):
         clean = "\n".join(f"## Q{q} k\n**Answer:** NO\n**Evidence:** `x`\n" for q in range(1, 8)) + "## Q8 k\n**Answer:** none\n"
         verdict, *_ = dr.plan_verdict(dr.parse_plan_answers(clean))
@@ -133,6 +140,7 @@ class Plan(unittest.TestCase):
         self.assertIn("| Q4 | no-rollback | YES |", md)
         self.assertIn("## Concerns (resolve before executing)\n- Q2 unverified-claims: YES", md)
         self.assertIn("## Riskiest step (model's view)\nStep 1", md)
+        self.assertIn("## Evidence by question\n- Q1 unread-files: NO [grounded] `Run the unit tests.`", md)
         self.assertIn("Whether a backup exists.", md)
         self.assertIn("plan check: 3 concern(s), 1 attention, 1 unclear", summary)
 

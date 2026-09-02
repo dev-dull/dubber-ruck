@@ -254,7 +254,18 @@ count across 4 runs, the same shape as the benchmark repo.
    reasons, and answered "don't commit yet" with the one-line fix. Round trip 1.8 min
    on the duck side.
 4. **`--votes` and `plan`**: vote merge by location, checkable-question plan mode with
-   CLI-side summary. *Half a day.*
+   CLI-side summary. **Done 2026-09-01.** Live: `review --votes 2` on the planted
+   `replace()` bug returned one finding at `[votes 2/2]`, grounded, verdict FIX FIRST
+   (2/2 runs), in 2.6 min total. `plan PLAN.md` on this document: 4 min, all seven
+   yes/no questions answered NO or UNCLEAR, verdict READY WITH NOTES; the one UNCLEAR
+   (an assumption labelled "worth testing" with no verification step) was a fair
+   catch. The first run tagged every evidence quote ungrounded: the model copies prose
+   accurately but drops inline backticks, joins passages with " / ", and elides with
+   "...". The matcher now ignores formatting characters and checks each quoted
+   segment separately, and the prompt asks for one continuous passage; six of the
+   seven quotes from that same run then ground, the seventh being a real
+   reconstruction. `--dump-raw` was added so this kind of question can be answered
+   without another 4-minute run.
 5. **Eval harness + README**, then a week of use before deciding on phase 2.
 
 ## Phase 2 candidates (decide after a week of use)

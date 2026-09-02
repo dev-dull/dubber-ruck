@@ -567,6 +567,22 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_LOOSE_TRANS = str.maketrans({"`": "", "*": "", "“": '"', "”": '"', "‘": "'", "’": "'", "—": "-", "–": "-"})
+SEGMENT_SPLIT_RE = re.compile(r"\s+/\s+|\.\.\.|…")
+MIN_SEGMENT = 12
+
+
+def norm_loose(s: str) -> str:
+    """Whitespace-collapsed and stripped of the formatting characters a model drops or
+    changes when it copies text: backticks, emphasis asterisks, curly quotes, dashes."""
+    return norm(s.translate(_LOOSE_TRANS))
+
+
+def quote_segments(q: str) -> list[str]:
+    """A quote stitched from several passages ("a / b", "a ... b") is checked per segment."""
+    return [seg for seg in (norm_loose(x) for x in SEGMENT_SPLIT_RE.split(q)) if len(seg) >= MIN_SEGMENT] or [norm_loose(q)]
+
+
 def split_sections(md: str) -> dict[str, str]:
     """'## Title' -> body text. Titles are lower-cased keys."""
     out: dict[str, str] = {}
@@ -620,14 +636,16 @@ def ground(findings: list[Finding], material: str, ignore: set[str] = frozenset(
     a short identifier that happens to exist should not vouch for an invented line.
     Whitespace is collapsed on both sides, so diff prefixes and indentation do not matter.
     """
-    haystack = norm(material)
+    haystack = norm_loose(material)
     for f in findings:
         spans = [q for q in f.quotes if norm(q) not in ignore]
         if not spans:
             f.grounded = None
             continue
         longest = max(spans, key=lambda q: len(norm(q)))
-        f.grounded = norm(longest) in haystack
+        # Every segment of the quote must occur; a stitched quote with one invented
+        # part is not grounded.
+        f.grounded = all(seg in haystack for seg in quote_segments(longest))
 
 
 def annotate(md: str, findings: list[Finding]) -> str:
@@ -831,9 +849,17 @@ def parse_plan_answers(md: str) -> list[PlanAnswer]:
 
 
 def ground_plan(answers: list[PlanAnswer], material: str) -> None:
+    """Evidence quotes come from prose, and the model tends to drop the plan's inline
+    backticks, so the quote is taken as everything before the explanation dash rather
+    than as individual backtick spans."""
     for a in answers:
+        head = re.split(r"\s+[—-]\s+", a.evidence, maxsplit=1)[0]
+        # The whole head is the quote. Inner backticks (the plan's own code spans, or
+        # several quoted passages joined with " / ") are handled by the loose matcher
+        # and per-segment check in ground(), so do not split on them here.
+        quote = head.strip().strip("`").strip("<> ")
         f = Finding(confidence=0, text=a.evidence)
-        f.quotes = [q.strip("<> ") for q in SPAN_RE.findall(a.evidence) if len(norm(q)) >= MIN_QUOTE]
+        f.quotes = [quote] if len(norm(quote)) >= MIN_QUOTE else []
         ground([f], material)
         a.grounded = f.grounded
 
@@ -878,6 +904,10 @@ def render_plan_report(answers: list[PlanAnswer], model_unsure: str) -> tuple[st
     risk = next((a for a in answers if a.category == "info"), None)
     lines += ["", "## Riskiest step (model's view)"]
     lines.append(f"{risk.answer} {risk.evidence}".strip() if risk else "MISSING")
+    lines += ["", "## Evidence by question"]
+    for a in answers:
+        if a.category != "info":
+            lines.append(f"- Q{a.qid} {a.key}: {a.answer} {gtag(a)} {a.evidence or '(no evidence given)'}".rstrip())
     lines += ["", "## Unsure about (model's own)"]
     lines.append(model_unsure.strip() or "nothing")
     g = sum(1 for a in answers if a.grounded is True)
@@ -1111,10 +1141,12 @@ def run_mode(args, *, prompt_name: str, think: bool, question: str, attachments:
             log(f"reasoning used the whole {max_tokens}-token budget; asking for the answer from its notes (thinking off)")
             res = rescue(server, model, messages, cut, timeout=DEFAULT_TIMEOUT_NOTHINK)
             notes.append("answer written from cut-off reasoning notes" + (f" (vote {i + 1})" if votes > 1 else ""))
-        if args.dump_reasoning:
-            path = args.dump_reasoning if votes == 1 else f"{args.dump_reasoning}.{i + 1}"
-            Path(path).write_text(res.reasoning, encoding="utf-8")
-            log(f"reasoning written to {path}")
+        for attr, payload, label in (("dump_reasoning", res.reasoning, "reasoning"), ("dump_raw", res.content, "raw answer")):
+            target = getattr(args, attr, None)
+            if target:
+                path = target if votes == 1 else f"{target}.{i + 1}"
+                Path(path).write_text(payload, encoding="utf-8")
+                log(f"{label} written to {path}")
         findings: list[Finding] = []
         content = res.content
         if check_grounding:
@@ -1234,6 +1266,7 @@ def add_generation(p: argparse.ArgumentParser) -> None:
     p.add_argument("--seed", type=int, help="pin the sampling seed (reproducible with temperature 0)")
     p.add_argument("--raw", action="store_true", help="print the model's answer only, no footer")
     p.add_argument("--dump-reasoning", metavar="PATH", help="write the hidden reasoning to a file")
+    p.add_argument("--dump-raw", metavar="PATH", help="write the model's unprocessed answer to a file (before grounding tags, voting, or plan rendering)")
     p.add_argument("--dry-run", action="store_true", help="show input size and time estimate without sending")
     p.add_argument("--no-rescue", action="store_true", help="fail instead of salvaging an answer when reasoning exhausts max_tokens")
 

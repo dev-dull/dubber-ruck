@@ -9,7 +9,10 @@ Rules:
 - Answer only from the plan and the material provided. Do not assume what the codebase
   looks like. If the plan does not say, the answer is UNCLEAR, not a guess.
 - For every YES or NO, quote the sentence or line from the plan that supports it,
-  verbatim, between backticks. If you cannot quote anything, answer UNCLEAR.
+  verbatim, between backticks. One continuous passage: do not join fragments with "/",
+  do not elide with "...", do not drop the plan's own formatting characters. If two
+  passages matter, quote the more important one and paraphrase the other in the
+  explanation. If you cannot quote anything, answer UNCLEAR.
 - YES and NO mean what the question asks, literally. Read each question twice.
 - Do not pad. One or two sentences of explanation per question is enough.
 - Do not invent APIs, tools, or facts about the system. If a judgement would need a

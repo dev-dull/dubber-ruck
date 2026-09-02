@@ -65,6 +65,8 @@ really a bug. With per-sample recall around 75%, three votes surface a real bug 
 Thinking mode is slower and more accurate: expect 1-3 minutes for a few thousand
 tokens of input. `--no-think` and `--think` override the per-mode default.
 `--dry-run` prints the input size and a time estimate without sending anything.
+`--dump-raw PATH` saves the model's unprocessed answer, and `--dump-reasoning PATH` its
+hidden reasoning, for inspecting a surprising result without re-running it.
 
 ### Reading the output
 

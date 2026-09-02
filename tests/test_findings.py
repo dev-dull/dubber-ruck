@@ -95,6 +95,21 @@ class Ground(unittest.TestCase):
         dr.ground(f, MATERIAL)
         self.assertFalse(f[0].grounded)
 
+    def test_loose_match_ignores_formatting_characters(self):
+        material = "The CLI verifies the quote exists and marks findings `grounded` or `ungrounded`.\n**Build order**\n\n1. **Core client** (`status`, `consult`)"
+        f = dr.parse_findings("## Findings\n- [4/5] x `marks findings grounded or ungrounded` — copied without the backticks")
+        dr.ground(f, material)
+        self.assertTrue(f[0].grounded)
+
+    def test_stitched_quote_needs_every_segment(self):
+        material = "alpha beta gamma delta epsilon\nzeta eta theta iota kappa lambda\n"
+        good = dr.parse_findings("## Findings\n- [4/5] x `alpha beta gamma delta ... eta theta iota kappa` — two real pieces")
+        bad = dr.parse_findings("## Findings\n- [4/5] x `alpha beta gamma delta / invented words here now` — one invented piece")
+        dr.ground(good, material)
+        dr.ground(bad, material)
+        self.assertTrue(good[0].grounded)
+        self.assertFalse(bad[0].grounded)
+
     def test_attachment_names_do_not_ground(self):
         f = dr.parse_findings("## Findings\n- [5/5] `main.go` — vague")
         dr.ground(f, "### File: main.go\n" + MATERIAL, ignore={"main.go"})
