@@ -108,6 +108,13 @@ class HookTests(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("line19 = 19", self.stdin_capture.read_text())
 
+    def test_prose_in_commit_message_does_not_change_directory(self):
+        self.stage_big_change()
+        cmd = f"cd {self.repo} && git commit -q -F - <<'EOF'\nHonours `cd DIR &&` and `git -C DIR`, and reviews the tree.\nEOF"
+        out = self.run_hook("commit", {"tool_input": {"command": cmd}, "cwd": "/nonexistent"})
+        self.assertIsNotNone(out)
+        self.assertIn("line19 = 19", self.stdin_capture.read_text())
+
     def test_commit_after_git_add_in_same_command_reviews_working_tree(self):
         # PreToolUse runs before the command, so `git add && git commit` has nothing staged yet.
         (self.repo / "a.py").write_text("".join(f"line{i} = {i}\n" for i in range(20)))  # not staged

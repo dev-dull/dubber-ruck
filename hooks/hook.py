@@ -120,19 +120,28 @@ _GIT_OPTS = r"(?:-{1,2}[\w-]+(?:=\S+|\s+[^-\s]\S*)?\s+)*"
 COMMIT_RE = re.compile(r"(^|[;&|(]\s*|\b(?:then|do)\s+)git\s+" + _GIT_OPTS + r"commit\b")
 GIT_ADD_RE = re.compile(r"(^|[;&|(]\s*|\b(?:then|do)\s+)git\s+" + _GIT_OPTS + r"add\b")
 CD_RE = re.compile(r"^\s*cd\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))\s*(?:&&|;)")
-GIT_C_RE = re.compile(r"\bgit\s+(?:-{1,2}[\w-]+(?:=\S+|\s+[^-\s]\S*)?\s+)*-C\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))")
+# `-C DIR` only counts when it belongs to the git invocation that runs `commit`;
+# a commit message body (heredoc) may mention "git -C DIR" as prose.
+GIT_C_COMMIT_RE = re.compile(
+    r"(?:^|[;&|(]\s*|\b(?:then|do)\s+)git\s+" + _GIT_OPTS + r"-C\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))\s+" + _GIT_OPTS + r"commit\b"
+)
 
 
 def effective_cwd(command: str, cwd: str) -> str:
     """The directory the commit will run in. The hook payload carries the session's
-    cwd, but the command may start with `cd DIR &&` or use `git -C DIR`."""
-    for rx in (GIT_C_RE, CD_RE):
-        m = rx.search(command)
+    cwd, but the command may start with `cd DIR &&` or use `git -C DIR commit`."""
+    target = None
+    m = GIT_C_COMMIT_RE.search(command)
+    if m:
+        target = next(g for g in m.groups() if g)
+    else:
+        m = CD_RE.match(command)
         if m:
             target = next(g for g in m.groups() if g)
-            target = os.path.expanduser(os.path.expandvars(target))
-            return target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
-    return cwd
+    if not target:
+        return cwd
+    target = os.path.expanduser(os.path.expandvars(target))
+    return target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
 
 
 def commit_diff(command: str, cwd: str) -> tuple[str, str]:
