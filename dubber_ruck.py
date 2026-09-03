@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """dubber ruck: a local second opinion for Claude Code sessions.
 
-Talks to llama-swap / llama.cpp on clode over plain HTTP. Standard library only.
-See PLAN.md for the design and the reasoning behind the guard rails.
+Talks to any OpenAI-compatible chat endpoint over plain HTTP; when the server is
+llama-swap it also uses the management endpoints for model state and slot etiquette.
+Standard library only. See docs/DESIGN.md for the reasoning behind the guard rails.
 
 Exit codes:
   0 ok            1 error            2 server unreachable
@@ -25,30 +26,60 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
-DEFAULT_URL = os.environ.get("DUBBER_RUCK_URL", "http://clode.deep13.lol:8080")
-PREFERRED_MODEL = os.environ.get("DUBBER_RUCK_MODEL", "Qwen3.6-35B")
-PROMPT_DIR = Path(
-    os.environ.get("DUBBER_RUCK_PROMPTS") or Path(__file__).resolve().parent / "prompts"
-)
+# Configuration: ~/.config/dubber-ruck/config holds KEY=VALUE lines (see
+# config.example); DUBBER_RUCK_* environment variables override it.
+CONFIG_PATH = Path(os.environ.get("DUBBER_RUCK_CONFIG") or Path.home() / ".config" / "dubber-ruck" / "config")
 
-# Measured on clode 2026-09-01 (Qwen3.6-35B, RTX 2080 + DDR4 experts). Used only for
-# the time estimate printed before a request; nothing depends on them being exact.
+
+def load_config(path: Path = CONFIG_PATH) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip().strip("'\"")
+            if key.startswith("DUBBER_RUCK_"):
+                out[key] = value
+    except OSError:
+        pass
+    for key, value in os.environ.items():
+        if key.startswith("DUBBER_RUCK_"):
+            out[key] = value
+    return out
+
+
+CONFIG = load_config()
+
+
+def cfg(key: str, default: str | None = None) -> str | None:
+    return CONFIG.get(key, default)
+
+
+DEFAULT_URL = cfg("DUBBER_RUCK_URL", "http://localhost:8080")
+PREFERRED_MODEL = cfg("DUBBER_RUCK_MODEL") or None  # None: use whatever the server has loaded
+PROMPT_DIR = Path(cfg("DUBBER_RUCK_PROMPTS") or Path(__file__).resolve().parent / "prompts")
+
+# Throughput figures used only for the time estimate printed before a request; they
+# were measured on the author's server and nothing depends on them being exact.
+# Override with DUBBER_RUCK_PREFILL_TPS / DUBBER_RUCK_GEN_TPS for your hardware.
 CHARS_PER_TOKEN = 3.5
-PREFILL_TPS = 800
-GEN_TPS = 26
+PREFILL_TPS = float(cfg("DUBBER_RUCK_PREFILL_TPS", "800"))
+GEN_TPS = float(cfg("DUBBER_RUCK_GEN_TPS", "26"))
 TYPICAL_GEN_THINK = 4500
 TYPICAL_GEN_NOTHINK = 700
-# Qwen's reasoning on a multi-part review can run past 8k tokens; the slot is 131k,
+# A thinking model's reasoning on a multi-part review can run past 8k tokens; with a
 # so the only cost of a generous budget is time (about 26 tok/s).
 MAX_TOKENS_THINK = 16_000
 MAX_TOKENS_NOTHINK = 3_000  # no-think answers occasionally reason out loud; leave room to finish
 
 WARN_TOKENS = 20_000  # above this, prefill alone is >25 s
 OUTPUT_MARGIN = 1024  # tokens kept free below the slot ceiling
-# Per-slot context when the server cannot tell us (-c 131072 / -np 1 on clode).
-FALLBACK_CTX = int(os.environ.get("DUBBER_RUCK_CTX", "131072"))
+# Context window per request when the server cannot report it.
+FALLBACK_CTX = int(cfg("DUBBER_RUCK_CTX", "131072"))
 
 DEFAULT_TIMEOUT_THINK = 900  # floor for the overall cap; scaled up with max_tokens
 DEFAULT_TIMEOUT_NOTHINK = 180
@@ -147,10 +178,21 @@ class Server:
             out[m["id"]] = ((m.get("status") or {}).get("value")) or "unknown"
         return out
 
-    def running(self) -> dict[str, str]:
-        """Models llama-swap currently has a process for -> state ('ready', 'starting', ...)."""
-        data = http("GET", f"{self.base}/running")
-        return {r["model"]: r.get("state", "unknown") for r in (data or {}).get("running", [])}
+    def running(self) -> dict[str, str] | None:
+        """llama-swap's process list -> {model: state ('ready', 'starting', ...)}.
+        None when the server is a plain OpenAI-compatible endpoint without llama-swap's
+        management API; the caller then skips model-state and slot etiquette."""
+        try:
+            data = http("GET", f"{self.base}/running")
+        except HTTPFailure as e:
+            if e.status in (404, 405, 501):
+                return None
+            raise
+        except DuckError:  # non-JSON body: some other server answered
+            return None
+        if not isinstance(data, dict) or "running" not in data:
+            return None
+        return {r["model"]: r.get("state", "unknown") for r in data.get("running", []) if "model" in r}
 
     def slots(self, model: str, timeout: float = PROBE_TIMEOUT) -> list[dict]:
         # Only call this for a model that is already loaded: llama-swap starts a
@@ -205,24 +247,37 @@ def fmt_duration(seconds: float) -> str:
 
 def choose_model(
     configured: dict[str, str],
-    running: dict[str, str],
+    running: dict[str, str] | None,
     requested: str | None,
-    preferred: str,
+    preferred: str | None,
     allow_swap: bool = False,
 ) -> tuple[str, str | None]:
     """Pick the model to send to, never causing a swap by accident.
 
-    Returns (model, note). Raises Refused when the request would swap a loaded model
-    without --allow-swap, and DuckError for unknown model names.
+    `running` is llama-swap's process list, or None for a plain OpenAI-compatible
+    server (no swap semantics). `preferred` is DUBBER_RUCK_MODEL, or None to accept
+    whatever is loaded. Returns (model, note). Raises Refused when the request would
+    swap a loaded model without --allow-swap, and DuckError when no model can be chosen.
     """
+    known = ", ".join(sorted(configured)) if configured else "none reported"
+
+    if requested and configured and requested not in configured:
+        raise DuckError(f"unknown model {requested!r}; the server offers: {known}")
+
+    if running is None:
+        model = requested or preferred
+        if not model and len(configured) == 1:
+            model = next(iter(configured))
+        if not model:
+            raise DuckError(f"no model chosen: set DUBBER_RUCK_MODEL or pass --model (the server offers: {known})")
+        if preferred and configured and preferred not in configured and not requested:
+            raise DuckError(f"preferred model {preferred!r} is not offered by the server ({known}); set DUBBER_RUCK_MODEL or pass --model")
+        return model, None
+
     loaded = [m for m, state in running.items() if state in ("ready", "starting")]
     resident = loaded[0] if loaded else None
 
     if requested:
-        if configured and requested not in configured:
-            raise DuckError(
-                f"unknown model {requested!r}; configured: {', '.join(sorted(configured))}"
-            )
         if resident and requested != resident:
             if not allow_swap:
                 raise Refused(
@@ -236,21 +291,23 @@ def choose_model(
         return requested, None
 
     if resident:
-        if resident != preferred:
+        if preferred and resident != preferred:
             return resident, (
                 f"WARNING: answering with {resident}, not the preferred {preferred}, because that is what "
-                f"llama-swap has loaded and swapping would interrupt other users. Expect lower accuracy "
-                f"(on the review benchmark the preferred model scored 7.0/10, the alternative 4.8/10). "
-                f"Load {preferred} when the box is idle, or set DUBBER_RUCK_MODEL if the preference has changed."
+                f"llama-swap has loaded and swapping would interrupt other users. The prompts and the "
+                f"accuracy notes are calibrated for the preferred model, so expect different results. "
+                f"Load {preferred} when the server is idle, or change DUBBER_RUCK_MODEL if the preference has moved."
             )
         return resident, None
 
-    if configured and preferred not in configured:
-        raise DuckError(
-            f"preferred model {preferred!r} is not configured; configured: "
-            f"{', '.join(sorted(configured))}. Set DUBBER_RUCK_MODEL or pass --model."
-        )
-    return preferred, f"no model loaded: cold start of {preferred} may take minutes"
+    if preferred:
+        if configured and preferred not in configured:
+            raise DuckError(f"preferred model {preferred!r} is not configured on the server ({known}). Set DUBBER_RUCK_MODEL or pass --model.")
+        return preferred, f"no model loaded: cold start of {preferred} may take minutes"
+    if len(configured) == 1:
+        model = next(iter(configured))
+        return model, f"no model loaded: cold start of {model} may take minutes"
+    raise DuckError(f"nothing is loaded and no preferred model is set; set DUBBER_RUCK_MODEL or pass --model (the server offers: {known})")
 
 
 def self_consult_check(server: Server, force: bool) -> None:
@@ -316,7 +373,7 @@ class Result:
 
 
 def sampling(think: bool) -> dict:
-    # Qwen's published recommendations for thinking / non-thinking modes.
+    # Sampling settings recommended by the Qwen3 model card for thinking / non-thinking modes; sensible for most instruct models.
     if think:
         return {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
     return {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
@@ -1026,14 +1083,15 @@ def prepare(args, think: bool) -> tuple[Server, str, str | None, int]:
         configured = server.models()
         running = server.running()
     except Unreachable as e:
-        raise Unreachable(f"cannot reach {server.base} ({e}). Is clode up? Are you on the LAN?") from None
+        raise Unreachable(f"cannot reach {server.base} ({e}). Is the server up, and are you on its network?") from None
     model, note = choose_model(configured, running, args.model, PREFERRED_MODEL, getattr(args, "allow_swap", False))
     if note:
         log(note)
-    state = running.get(model, "")
     n_ctx = 0
-    if state in ("ready", "starting"):
-        n_ctx = wait_for_slot(server, model, args.wait, state)
+    if running is not None:
+        state = running.get(model, "")
+        if state in ("ready", "starting"):
+            n_ctx = wait_for_slot(server, model, args.wait, state)
     return server, model, note, n_ctx
 
 
@@ -1046,8 +1104,16 @@ def cmd_status(args) -> int:
         print(f"unreachable: {server.base} ({e})", file=sys.stderr)
         return Unreachable.exit_code
 
-    info = {"url": server.base, "preferred": PREFERRED_MODEL, "models": [], "anthropic_base_url": os.environ.get("ANTHROPIC_BASE_URL") or None}
+    info = {
+        "url": server.base,
+        "server": "llama-swap" if running is not None else "openai-compatible",
+        "preferred": PREFERRED_MODEL,
+        "models": [],
+        "anthropic_base_url": os.environ.get("ANTHROPIC_BASE_URL") or None,
+    }
     rc = 0
+    if running is None:
+        running = {}
     for name, status in sorted(configured.items()):
         entry = {"model": name, "status": status, "state": running.get(name), "busy": None, "n_ctx": None}
         if running.get(name) == "ready":
@@ -1061,7 +1127,9 @@ def cmd_status(args) -> int:
         info["models"].append(entry)
 
     loaded = [m for m in info["models"] if m["state"] in ("ready", "starting")]
-    if not loaded:
+    if info["server"] != "llama-swap":
+        info["verdict"] = "unknown (no llama-swap management API; model state and slot use are not visible)"
+    elif not loaded:
         info["verdict"] = "no model loaded; first request will cold-start"
     elif any(m["busy"] for m in loaded):
         info["verdict"] = "busy"
@@ -1070,7 +1138,10 @@ def cmd_status(args) -> int:
         info["verdict"] = "idle"
 
     if args.probe:
-        model = loaded[0]["model"] if loaded else PREFERRED_MODEL
+        model = loaded[0]["model"] if loaded else (PREFERRED_MODEL or (next(iter(configured)) if configured else None))
+        if not model:
+            print("probe: no model to probe (set DUBBER_RUCK_MODEL)", file=sys.stderr)
+            return rc
         t0 = time.time()
         try:
             res = chat(server, model, [{"role": "user", "content": "Reply with exactly: ok"}], think=False, max_tokens=8, timeout=args.timeout or 120)
@@ -1082,16 +1153,16 @@ def cmd_status(args) -> int:
         print(json.dumps(info, indent=2))
         return rc
 
-    print(f"dubber ruck -> {server.base}")
+    print(f"dubber ruck -> {server.base} ({info['server']})")
     for m in info["models"]:
-        state = m["state"] or "unloaded"
+        state = (m["state"] or "unloaded") if info["server"] == "llama-swap" else "available"
         extra = ""
         if m["state"] == "ready":
             extra = f"  slot {'BUSY' if m['busy'] else 'idle'}  ctx {m['n_ctx']}/slot"
         elif m.get("error"):
             extra = f"  ({m['error']})"
         print(f"  {m['model']:<20} {state:<9}{extra}")
-    print(f"preferred: {PREFERRED_MODEL}   verdict: {info['verdict']}")
+    print(f"preferred: {PREFERRED_MODEL or 'none (use whatever is loaded)'}   verdict: {info['verdict']}")
     if info["anthropic_base_url"]:
         print(f"ANTHROPIC_BASE_URL={info['anthropic_base_url']}")
     if "probe" in info:
@@ -1121,7 +1192,7 @@ def run_mode(args, *, prompt_name: str, think: bool, question: str, attachments:
         log(f"large input (~{prompt_tokens} tokens): prefill alone will take ~{prompt_tokens / PREFILL_TPS:.0f}s. Trim to the relevant parts if you can.")
 
     if args.dry_run:
-        print(f"mode: {prompt_name}  model: {args.model or PREFERRED_MODEL} (not checked)  thinking: {'on' if think else 'off'}")
+        print(f"mode: {prompt_name}  model: {args.model or PREFERRED_MODEL or '(whatever is loaded)'} (not checked)  thinking: {'on' if think else 'off'}")
         print(f"input: ~{prompt_tokens} tokens across {len(attachments)} attachment(s); max_tokens {max_tokens}; timeout {timeout}s")
         print(f"estimated time: ~{fmt_duration(estimate_seconds(prompt_tokens, think))}")
         return 0
@@ -1266,8 +1337,8 @@ def cmd_duck(args) -> int:
 
 
 def add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--url", default=DEFAULT_URL, help=f"llama-swap base URL (default {DEFAULT_URL})")
-    p.add_argument("--model", help="explicit model name; refuses to swap a loaded model unless --allow-swap")
+    p.add_argument("--url", default=DEFAULT_URL, help=f"server base URL, OpenAI-compatible or llama-swap (default {DEFAULT_URL})")
+    p.add_argument("--model", help="explicit model name; on llama-swap, refuses to swap a loaded model unless --allow-swap")
     p.add_argument("--allow-swap", action="store_true", help="permit llama-swap to unload the resident model (interrupts other users)")
     p.add_argument("--wait", type=float, default=DEFAULT_WAIT, help=f"seconds to wait for a busy slot (default {DEFAULT_WAIT})")
     p.add_argument("--timeout", type=float, help="overall cap per request in seconds (default scales with --max-tokens)")
@@ -1291,11 +1362,11 @@ def add_generation(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="dubber-ruck", description="A local second opinion. See PLAN.md.")
+    ap = argparse.ArgumentParser(prog="dubber-ruck", description="A local second opinion for coding sessions. Config: ~/.config/dubber-ruck/config or DUBBER_RUCK_* variables.")
     ap.add_argument("--version", action="version", version=f"dubber-ruck {VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("status", help="what is loaded, is the slot busy, optional latency probe")
+    s = sub.add_parser("status", help="server type, what is loaded, is the slot busy, optional latency probe")
     s.add_argument("--probe", action="store_true", help="send a tiny request and time it")
     s.add_argument("--json", action="store_true")
     s.add_argument("--url", default=DEFAULT_URL)

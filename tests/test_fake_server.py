@@ -12,9 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import os
+os.environ["DUBBER_RUCK_CONFIG"] = "/nonexistent/dubber-ruck-config"
+for _k in [k for k in os.environ if k.startswith("DUBBER_RUCK_") and k != "DUBBER_RUCK_CONFIG"]:
+    del os.environ[_k]
 import dubber_ruck as dr  # noqa: E402
 
-MODEL = "Qwen3.6-35B"
+MODEL = "model-a"
 
 
 class FakeSwap(BaseHTTPRequestHandler):
@@ -22,6 +26,7 @@ class FakeSwap(BaseHTTPRequestHandler):
     busy = False
     reply = "## Findings\n- [confidence 5/5] a.py `x = 1` — fine. Verify by: look\n- [3/5] a.py `y = 2` — invented. Verify by: look\n\n## Answer\nok\n\n## Unsure about\nnothing"
     exhaust_first = False  # first chat call returns only reasoning, finish=length
+    plain = False  # pretend to be a plain OpenAI-compatible server: no /running, no /slots
     calls: list = []
 
     def log_message(self, *a):  # silence
@@ -39,7 +44,10 @@ class FakeSwap(BaseHTTPRequestHandler):
         if self.path == "/v1/models":
             self._json({"data": [{"id": MODEL, "status": {"value": "loaded"}}, {"id": "Other", "status": {"value": "unloaded"}}]})
         elif self.path == "/running":
-            self._json({"running": [{"model": MODEL, "state": "ready"}]})
+            if FakeSwap.plain:
+                self._json({"error": "not found"}, 404)
+            else:
+                self._json({"running": [{"model": MODEL, "state": "ready"}]})
         elif self.path == f"/upstream/{MODEL}/slots":
             self._json([{"id": 0, "n_ctx": 131072, "is_processing": FakeSwap.busy}])
         else:
@@ -92,6 +100,7 @@ class FakeServerTests(unittest.TestCase):
     def setUp(self):
         FakeSwap.busy = False
         FakeSwap.exhaust_first = False
+        FakeSwap.plain = False
         FakeSwap.calls = []
 
     def run_cli(self, *argv):
@@ -173,6 +182,19 @@ class FakeServerTests(unittest.TestCase):
         sysmsg = FakeSwap.calls[-1]["messages"][0]["content"]
         self.assertIn("Q4 no-rollback:", sysmsg)
         self.assertNotIn("{QUESTIONS}", sysmsg)
+
+    def test_plain_openai_server_works_with_an_explicit_model(self):
+        FakeSwap.plain = True
+        rc, out, err = self.run_cli("consult", "q", "-f", str(self.material), "--model", MODEL, "-q")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("[grounded]", out)
+        rc, out, _ = self.run_cli("status")
+        self.assertEqual(rc, 0)
+        self.assertIn("(openai-compatible)", out)
+        self.assertIn("verdict: unknown", out)
+        rc, _, err = self.run_cli("consult", "q", "-q")  # two models offered, none chosen
+        self.assertEqual(rc, 1)
+        self.assertIn("DUBBER_RUCK_MODEL", err)
 
     def test_status_reports_loaded_and_idle(self):
         rc, out, _ = self.run_cli("status")

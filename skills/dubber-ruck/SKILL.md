@@ -1,6 +1,6 @@
 ---
 name: dubber-ruck
-description: Use this skill PROACTIVELY, without being asked, at these checkpoints - (1) after drafting any plan or design that touches 3+ files or makes a design choice, before presenting it; (2) before committing a diff that is more than a few lines; (3) when the same bug has survived two attempted fixes; (4) before any destructive or hard-to-reverse step. Also whenever the user says "duck", "dubber ruck", "second opinion", "sanity check", "rubber duck", or "what am I missing". It gets a second opinion from a local model (Qwen3.6-35B on clode, nothing leaves the LAN) via the dubber-ruck CLI - review a diff, consult with files, rubber-duck a problem, or check a plan. About 70% accurate, so findings are hypotheses to verify, never facts to relay.
+description: Use this skill PROACTIVELY, without being asked, at these checkpoints - (1) after drafting any plan or design that touches 3+ files or makes a design choice, before presenting it; (2) before committing a diff that is more than a few lines; (3) when the same bug has survived two attempted fixes; (4) before any destructive or hard-to-reverse step. Also whenever the user says "duck", "dubber ruck", "second opinion", "sanity check", "rubber duck", or "what am I missing". It gets a second opinion from a model you host yourself (nothing leaves your network) via the dubber-ruck CLI - review a diff, consult with files, rubber-duck a problem, or check a plan. Small local models are right most of the time but not always, so findings are hypotheses to verify, never facts to relay.
 when_to_use: Fresh project starting with a planning round; you just wrote a plan or PLAN.md; you are about to git commit; you have retried a fix twice; you are about to delete, migrate, or deploy; the user asks for a second opinion or a duck.
 argument-hint: [review|consult|duck|plan] [question, focus, or plan file]
 allowed-tools: Bash(dubber-ruck *)
@@ -10,9 +10,10 @@ allowed-tools: Bash(dubber-ruck *)
 
 A second reviewer that is differently wrong from you. It has no memory of how the
 work got here, which is exactly why it catches assumption drift you cannot see. It
-is also wrong about a third of the time, with characteristic failures: invented
-APIs, invented framework behaviour, and confident claims about lines that are not
-in the diff. The tool and this skill exist to make that useful instead of dangerous.
+is a small self-hosted model, so it is also wrong a meaningful fraction of the time,
+with characteristic failures: invented APIs, invented framework behaviour, and
+confident claims about lines that are not in the diff. The tool and this skill exist
+to make that useful instead of dangerous.
 
 ## Server state right now
 
@@ -20,9 +21,10 @@ in the diff. The tool and this skill exist to make that useful instead of danger
 !`dubber-ruck status 2>&1 || true`
 ```
 
-One model, one slot, shared by the whole house. If the verdict above is `busy`,
-someone else is mid-request: wait for a natural pause or skip the consult. If it
-is `unreachable`, skip it and say so in one line. Do not poll or retry in a loop.
+A self-hosted server may have a single slot shared with other people. If the verdict
+above is `busy`, someone else is mid-request: wait for a natural pause or skip the
+consult. If it is `unreachable`, skip it and say so in one line. Do not poll or retry
+in a loop.
 
 ## When to consult
 
@@ -77,8 +79,8 @@ not think and answers in about 25 seconds. Two ways to run a thinking call:
   result later; a turn that ends is a result that is lost.
 
 Add `--no-think` for a quick answer to a simple question. `-q` suppresses progress
-lines. The command refuses to run when this session is itself pointed at clode; do
-not add `--force` to get around that.
+lines. The command refuses to run when this session is itself pointed at the same
+local server (`ANTHROPIC_BASE_URL`); do not add `--force` to get around that.
 
 If `$ARGUMENTS` is given: a first word of `review`, `consult`, `duck`, or `plan` picks
 the mode and the rest is the question, focus, or plan file. Otherwise, if there is an uncommitted

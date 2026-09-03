@@ -1,0 +1,28 @@
+# dubber ruck configuration. Copy to ~/.config/dubber-ruck/config (install.sh does
+# this if the file is missing). KEY=VALUE lines; DUBBER_RUCK_* environment variables
+# override anything set here.
+
+# Base URL of your OpenAI-compatible chat server. With llama-swap in front of
+# llama.cpp you also get model-state and slot etiquette; any other server works
+# with plain chat completions.
+DUBBER_RUCK_URL=http://localhost:8080
+
+# Model to ask for. On llama-swap this is the preferred model: whatever is already
+# loaded is used instead of swapping, with a warning. On a plain server it is
+# required unless the server offers exactly one model.
+#DUBBER_RUCK_MODEL=my-model
+
+# Context window per request, used only when the server cannot report it.
+#DUBBER_RUCK_CTX=131072
+
+# Throughput of your hardware, used only for the time estimate printed before a
+# request. Measure once with `dubber-ruck status --probe` and a real consult.
+#DUBBER_RUCK_PREFILL_TPS=800
+#DUBBER_RUCK_GEN_TPS=26
+
+# Claude Code hook modes: off | quick (thinking off) | think (thinking on).
+#DUBBER_RUCK_COMMIT_HOOK=quick
+#DUBBER_RUCK_PLAN_HOOK=think
+
+# Directory of system prompts, if you keep customised copies outside the repo.
+#DUBBER_RUCK_PROMPTS=/path/to/prompts

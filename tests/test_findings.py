@@ -6,6 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import os
+os.environ["DUBBER_RUCK_CONFIG"] = "/nonexistent/dubber-ruck-config"
+for _k in [k for k in os.environ if k.startswith("DUBBER_RUCK_") and k != "DUBBER_RUCK_CONFIG"]:
+    del os.environ[_k]
 import dubber_ruck as dr  # noqa: E402
 
 MATERIAL = """\

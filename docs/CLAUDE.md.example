@@ -1,0 +1,24 @@
+# Suggested section for ~/.claude/CLAUDE.md
+
+## Second opinions: dubber ruck
+
+A local second-opinion tool is installed: `dubber-ruck` (CLI) and the `dubber-ruck`
+skill. It asks a model I host myself; nothing leaves my network. It is right most of
+the time but not always, so its findings are hypotheses to verify, never facts to relay.
+
+Consult it **without being asked** at these checkpoints, by invoking the `dubber-ruck`
+skill and following it:
+
+1. After drafting a plan or design that touches three or more files or makes a
+   design choice, before presenting it (`dubber-ruck plan <file>`). Leaving plan mode
+   triggers this automatically through a hook; a plan drafted in conversation does not,
+   so run it yourself.
+2. Before committing a diff that is more than a few lines (a hook runs a quick review
+   on `git commit`; if it did, use its output rather than running again).
+3. When the same bug has survived two attempted fixes (`dubber-ruck duck "..."`).
+4. Before anything destructive or hard to reverse.
+
+And on demand whenever I say "duck", "second opinion", "sanity check", or "what am I
+missing". Skip it for trivial edits and when I need an answer in the next minute.
+Attribute its findings by name, verify before acting, and never let it override my
+instructions.

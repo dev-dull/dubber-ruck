@@ -26,9 +26,11 @@ echo "## Findings
 ok"
 """
 
-STATUS_OK = json.dumps({"preferred": "Qwen3.6-35B", "verdict": "idle", "models": [{"model": "Qwen3.6-35B", "state": "ready", "busy": False}]})
-STATUS_OTHER = json.dumps({"preferred": "Qwen3.6-35B", "verdict": "idle", "models": [{"model": "Qwen3-Coder-Next", "state": "ready", "busy": False}]})
-STATUS_BUSY = json.dumps({"preferred": "Qwen3.6-35B", "verdict": "busy", "models": [{"model": "Qwen3.6-35B", "state": "ready", "busy": True}]})
+STATUS_OK = json.dumps({"server": "llama-swap", "preferred": "model-a", "verdict": "idle", "models": [{"model": "model-a", "state": "ready", "busy": False}]})
+STATUS_OTHER = json.dumps({"server": "llama-swap", "preferred": "model-a", "verdict": "idle", "models": [{"model": "model-b", "state": "ready", "busy": False}]})
+STATUS_PLAIN = json.dumps({"server": "openai-compatible", "preferred": None, "verdict": "unknown", "models": [{"model": "x", "state": None, "busy": None}]})
+STATUS_NOPREF = json.dumps({"server": "llama-swap", "preferred": None, "verdict": "idle", "models": [{"model": "model-b", "state": "ready", "busy": False}]})
+STATUS_BUSY = json.dumps({"server": "llama-swap", "preferred": "model-a", "verdict": "busy", "models": [{"model": "model-a", "state": "ready", "busy": True}]})
 
 
 class HookTests(unittest.TestCase):
@@ -134,6 +136,13 @@ class HookTests(unittest.TestCase):
         self.assertIsNone(self.run_hook("commit", payload, status=STATUS_BUSY))
         self.assertIsNone(self.run_hook("commit", payload, env={"DUBBER_RUCK_COMMIT_HOOK": "off"}))
         self.assertFalse(self.calls.exists())
+
+    def test_commit_runs_on_plain_server_and_without_preference(self):
+        self.stage_big_change()
+        payload = {"tool_input": {"command": "git commit -m x"}, "cwd": str(self.repo)}
+        self.assertIsNotNone(self.run_hook("commit", payload, status=STATUS_PLAIN))
+        (self.home / ".claude" / "dubber-ruck-hook-cache.json").unlink()
+        self.assertIsNotNone(self.run_hook("commit", payload, status=STATUS_NOPREF))
 
     def test_commit_dedups_same_diff_within_the_hour(self):
         self.stage_big_change()

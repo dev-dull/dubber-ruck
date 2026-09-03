@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse hooks for dubber ruck.
 
-    python3 hook.py commit   # matcher Bash, if "Bash(git commit *)"
+    python3 hook.py commit   # matcher Bash, if "Bash(git *)"
     python3 hook.py plan     # matcher ExitPlanMode
 
 Reads the hook JSON on stdin, runs dubber-ruck when the checkpoint is worth it, and
@@ -31,12 +31,32 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
+CONFIG_PATH = Path(os.environ.get("DUBBER_RUCK_CONFIG") or HOME / ".config" / "dubber-ruck" / "config")
+
+
+def _config() -> dict[str, str]:
+    """Same file and precedence as the CLI: config file, then DUBBER_RUCK_* env vars."""
+    out: dict[str, str] = {}
+    try:
+        for line in CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip().startswith("DUBBER_RUCK_"):
+                    out[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    out.update({k: v for k, v in os.environ.items() if k.startswith("DUBBER_RUCK_")})
+    return out
+
+
+CONFIG = _config()
 LOG = HOME / ".claude" / "dubber-ruck-hook.log"
 CACHE = HOME / ".claude" / "dubber-ruck-hook-cache.json"
 DEDUP_SECONDS = 3600
-MIN_DIFF_LINES = int(os.environ.get("DUBBER_RUCK_HOOK_MIN_LINES", "8"))
+MIN_DIFF_LINES = int(CONFIG.get("DUBBER_RUCK_HOOK_MIN_LINES", "8"))
 PLAN_MAX_AGE = 3 * 3600
-BIN = os.environ.get("DUBBER_RUCK_BIN") or str(HOME / "bin" / "dubber-ruck")
+BIN = CONFIG.get("DUBBER_RUCK_BIN") or str(HOME / "bin" / "dubber-ruck")
 CLI_TIMEOUT = {"quick": 240, "think": 900}
 
 
@@ -62,12 +82,14 @@ def run(argv: list[str], *, cwd: str | None = None, timeout: int = 60, stdin: st
 
 def mode_for(kind: str) -> str:
     default = "quick" if kind == "commit" else "think"
-    value = os.environ.get(f"DUBBER_RUCK_{kind.upper()}_HOOK", default).strip().lower()
+    value = CONFIG.get(f"DUBBER_RUCK_{kind.upper()}_HOOK", default).strip().lower()
     return value if value in ("off", "quick", "think") else default
 
 
 def server_ok() -> tuple[bool, str]:
-    """True when the preferred model is loaded and its slot is idle."""
+    """True when a usable model is loaded and its slot is idle. On llama-swap that
+    means the preferred model (if one is configured) is the resident one; on a plain
+    OpenAI-compatible server nothing is visible, so it is assumed usable."""
     try:
         p = run([BIN, "status", "--json"], timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -78,12 +100,14 @@ def server_ok() -> tuple[bool, str]:
         info = json.loads(p.stdout)
     except json.JSONDecodeError:
         return False, "status output not JSON"
+    if info.get("server") != "llama-swap":
+        return True, "ok (plain server, state not visible)"
     preferred = info.get("preferred")
     loaded = [m for m in info.get("models", []) if m.get("state") in ("ready", "starting")]
     if not loaded:
         return False, "no model loaded (cold start would take minutes)"
-    if loaded[0].get("model") != preferred:
-        return False, f"loaded model is {loaded[0].get('model')}, not the preferred {preferred}; skipping rather than trust a weaker reviewer"
+    if preferred and loaded[0].get("model") != preferred:
+        return False, f"loaded model is {loaded[0].get('model')}, not the preferred {preferred}; skipping rather than review with a model the prompts were not calibrated for"
     if info.get("verdict") == "busy":
         return False, "slot busy"
     return True, "ok"
@@ -205,7 +229,7 @@ def hook_commit(payload: dict) -> None:
         return
     log(f"commit: done in mode {mode}")
     emit(
-        "dubber ruck (a local ~70%-accurate second opinion, run automatically by a pre-commit hook) "
+        "dubber ruck (a self-hosted second-opinion model, imperfect by design, run automatically by a pre-commit hook) "
         f"reviewed the {label} that this commit will include:\n\n{p.stdout.strip()}\n\n"
         "The commit proceeds regardless. Treat each finding as a hypothesis: verify it against the code "
         "before acting, discard UNGROUNDED ones unless independently confirmed, and if something real "
@@ -276,7 +300,7 @@ def hook_plan(payload: dict) -> None:
         return
     log(f"plan: done in mode {mode}")
     emit(
-        "dubber ruck (a local ~70%-accurate second opinion, run automatically when a plan is presented) "
+        "dubber ruck (a self-hosted second-opinion model, imperfect by design, run automatically when a plan is presented) "
         f"checked the plan file {plan}:\n\n{p.stdout.strip()}\n\n"
         "The verdict was computed by the tool from fixed questions, so READY means no concern found, not "
         "approval. For each concern or unanswered question, decide whether it is real: if it is, revise "

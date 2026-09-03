@@ -6,60 +6,118 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import os
+os.environ["DUBBER_RUCK_CONFIG"] = "/nonexistent/dubber-ruck-config"
+for _k in [k for k in os.environ if k.startswith("DUBBER_RUCK_") and k != "DUBBER_RUCK_CONFIG"]:
+    del os.environ[_k]
 import dubber_ruck as dr  # noqa: E402
 
 # Configured-model map as /v1/models reports it. The 'running' dict passed to
 # choose_model is the authority on what is resident; these status strings are not.
-CONFIGURED = {"Qwen3.6-35B": "unknown", "Qwen3-Coder-Next": "unknown"}
+CONFIGURED = {"model-a": "unknown", "model-b": "unknown"}
 
 
 class ChooseModel(unittest.TestCase):
     def test_uses_loaded_model_when_nothing_requested(self):
-        model, note = dr.choose_model(CONFIGURED, {"Qwen3.6-35B": "ready"}, None, "Qwen3.6-35B")
-        self.assertEqual(model, "Qwen3.6-35B")
+        model, note = dr.choose_model(CONFIGURED, {"model-a": "ready"}, None, "model-a")
+        self.assertEqual(model, "model-a")
         self.assertIsNone(note)
 
     def test_uses_loaded_model_even_if_not_preferred(self):
-        model, note = dr.choose_model(CONFIGURED, {"Qwen3-Coder-Next": "ready"}, None, "Qwen3.6-35B")
-        self.assertEqual(model, "Qwen3-Coder-Next")
+        model, note = dr.choose_model(CONFIGURED, {"model-b": "ready"}, None, "model-a")
+        self.assertEqual(model, "model-b")
         self.assertTrue(note.startswith("WARNING"), note)
-        self.assertIn("not the preferred Qwen3.6-35B", note)
+        self.assertIn("not the preferred model-a", note)
 
     def test_refuses_to_swap_without_flag(self):
         with self.assertRaises(dr.Refused):
-            dr.choose_model(CONFIGURED, {"Qwen3-Coder-Next": "ready"}, "Qwen3.6-35B", "Qwen3.6-35B")
+            dr.choose_model(CONFIGURED, {"model-b": "ready"}, "model-a", "model-a")
 
     def test_swaps_with_flag(self):
-        model, note = dr.choose_model(CONFIGURED, {"Qwen3-Coder-Next": "ready"}, "Qwen3.6-35B", "Qwen3.6-35B", allow_swap=True)
-        self.assertEqual(model, "Qwen3.6-35B")
+        model, note = dr.choose_model(CONFIGURED, {"model-b": "ready"}, "model-a", "model-a", allow_swap=True)
+        self.assertEqual(model, "model-a")
         self.assertIn("swapping", note)
 
     def test_requested_model_already_loaded_is_silent(self):
-        model, note = dr.choose_model(CONFIGURED, {"Qwen3.6-35B": "ready"}, "Qwen3.6-35B", "Qwen3.6-35B")
-        self.assertEqual(model, "Qwen3.6-35B")
+        model, note = dr.choose_model(CONFIGURED, {"model-a": "ready"}, "model-a", "model-a")
+        self.assertEqual(model, "model-a")
         self.assertIsNone(note)
 
     def test_nothing_loaded_uses_preferred_with_cold_start_note(self):
-        model, note = dr.choose_model(CONFIGURED, {}, None, "Qwen3.6-35B")
-        self.assertEqual(model, "Qwen3.6-35B")
+        model, note = dr.choose_model(CONFIGURED, {}, None, "model-a")
+        self.assertEqual(model, "model-a")
         self.assertIn("cold start", note)
 
     def test_starting_counts_as_resident(self):
         with self.assertRaises(dr.Refused):
-            dr.choose_model(CONFIGURED, {"Qwen3-Coder-Next": "starting"}, "Qwen3.6-35B", "Qwen3.6-35B")
+            dr.choose_model(CONFIGURED, {"model-b": "starting"}, "model-a", "model-a")
 
     def test_unknown_model_rejected(self):
         with self.assertRaises(dr.DuckError):
-            dr.choose_model(CONFIGURED, {}, "coder", "Qwen3.6-35B")
+            dr.choose_model(CONFIGURED, {}, "coder", "model-a")
 
     def test_unknown_preferred_rejected(self):
         with self.assertRaises(dr.DuckError):
             dr.choose_model(CONFIGURED, {}, None, "coder")
 
+    # No preferred model configured: use whatever is loaded.
+    def test_no_preference_takes_the_loaded_model_silently(self):
+        model, note = dr.choose_model(CONFIGURED, {"model-b": "ready"}, None, None)
+        self.assertEqual(model, "model-b")
+        self.assertIsNone(note)
+
+    def test_no_preference_nothing_loaded_single_model_cold_starts(self):
+        model, note = dr.choose_model({"only": "unknown"}, {}, None, None)
+        self.assertEqual(model, "only")
+        self.assertIn("cold start", note)
+
+    def test_no_preference_nothing_loaded_many_models_needs_a_choice(self):
+        with self.assertRaises(dr.DuckError):
+            dr.choose_model(CONFIGURED, {}, None, None)
+
+    # Plain OpenAI-compatible server: llama-swap's process list is None.
+    def test_plain_server_uses_requested_or_preferred(self):
+        self.assertEqual(dr.choose_model(CONFIGURED, None, "model-b", "model-a"), ("model-b", None))
+        self.assertEqual(dr.choose_model(CONFIGURED, None, None, "model-a"), ("model-a", None))
+
+    def test_plain_server_single_model_needs_no_config(self):
+        self.assertEqual(dr.choose_model({"only": "unknown"}, None, None, None), ("only", None))
+
+    def test_plain_server_many_models_no_preference_is_an_error(self):
+        with self.assertRaises(dr.DuckError):
+            dr.choose_model(CONFIGURED, None, None, None)
+
+    def test_plain_server_preferred_not_offered_is_an_error(self):
+        with self.assertRaises(dr.DuckError):
+            dr.choose_model(CONFIGURED, None, None, "coder")
+
+    def test_plain_server_never_refuses_a_swap(self):
+        self.assertEqual(dr.choose_model(CONFIGURED, None, "model-b", "model-a"), ("model-b", None))
+
+
+class Config(unittest.TestCase):
+    def test_file_then_env_precedence(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False) as f:
+            f.write("# comment\nDUBBER_RUCK_URL = 'http://file.example:1'\nDUBBER_RUCK_MODEL=\"m\"\nOTHER=ignored\n")
+            path = Path(f.name)
+        try:
+            os.environ["DUBBER_RUCK_MODEL"] = "from-env"
+            c = dr.load_config(path)
+        finally:
+            del os.environ["DUBBER_RUCK_MODEL"]
+            path.unlink()
+        self.assertEqual(c["DUBBER_RUCK_URL"], "http://file.example:1")
+        self.assertEqual(c["DUBBER_RUCK_MODEL"], "from-env")
+        self.assertNotIn("OTHER", c)
+
+    def test_missing_file_is_fine(self):
+        self.assertEqual({k: v for k, v in dr.load_config(Path("/nonexistent/x")).items() if k != "DUBBER_RUCK_CONFIG"}, {})
+
 
 class Estimates(unittest.TestCase):
     def test_token_estimate_matches_measured_ratio(self):
-        # 16811 chars measured at 4740 tokens on clode.
+        # 16811 chars measured at 4740 tokens on the author's server.
         est = dr.estimate_tokens("x" * 16811)
         self.assertTrue(4300 <= est <= 5200, est)
 
@@ -85,9 +143,9 @@ class Messages(unittest.TestCase):
 
 class Footer(unittest.TestCase):
     def test_footer_mentions_model_and_reminder(self):
-        res = dr.Result(content="x", reasoning="", finish_reason="stop", model="unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M", wall=12.0, prompt_tokens=100, completion_tokens=50)
+        res = dr.Result(content="x", reasoning="", finish_reason="stop", model="unsloth/model-a-A3B-GGUF:UD-Q4_K_M", wall=12.0, prompt_tokens=100, completion_tokens=50)
         text = dr.footer(res, think=False, note="hello")
-        self.assertIn("Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M", text)
+        self.assertIn("model-a-A3B-GGUF:UD-Q4_K_M", text)
         self.assertIn("thinking off", text)
         self.assertIn("note: hello", text)
         self.assertIn("Verify", text)
@@ -172,11 +230,11 @@ class SelfConsult(unittest.TestCase):
     def test_refuses_same_host(self):
         import os
         old = os.environ.get("ANTHROPIC_BASE_URL")
-        os.environ["ANTHROPIC_BASE_URL"] = "http://clode.deep13.lol:8080"
+        os.environ["ANTHROPIC_BASE_URL"] = "http://llm.example.lan:8080"
         try:
             with self.assertRaises(dr.Refused):
-                dr.self_consult_check(dr.Server("http://clode.deep13.lol:8080"), force=False)
-            dr.self_consult_check(dr.Server("http://clode.deep13.lol:8080"), force=True)
+                dr.self_consult_check(dr.Server("http://llm.example.lan:8080"), force=False)
+            dr.self_consult_check(dr.Server("http://llm.example.lan:8080"), force=True)
             dr.self_consult_check(dr.Server("http://other:8080"), force=False)
         finally:
             if old is None:
