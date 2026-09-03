@@ -72,7 +72,7 @@ GEN_TPS = float(cfg("DUBBER_RUCK_GEN_TPS", "26"))
 TYPICAL_GEN_THINK = 4500
 TYPICAL_GEN_NOTHINK = 700
 # A thinking model's reasoning on a multi-part review can run past 8k tokens; with a
-# so the only cost of a generous budget is time (about 26 tok/s).
+# large context window the only cost of a generous budget is time.
 MAX_TOKENS_THINK = 16_000
 MAX_TOKENS_NOTHINK = 3_000  # no-think answers occasionally reason out loud; leave room to finish
 
@@ -642,6 +642,14 @@ def norm_loose(s: str) -> str:
     return norm(s.translate(_LOOSE_TRANS))
 
 
+DIFF_PREFIX_RE = re.compile(r"^[+\- ](?![+\-]{2})", re.M)
+
+
+def strip_diff_prefixes(material: str) -> str:
+    """Drop the leading '+', '-' or ' ' of unified-diff lines (not '+++'/'---' headers)."""
+    return DIFF_PREFIX_RE.sub("", material)
+
+
 def quote_segments(q: str) -> list[str]:
     """A quote stitched from several passages ("a / b", "a ... b") is checked per segment."""
     return [seg for seg in (norm_loose(x) for x in SEGMENT_SPLIT_RE.split(q)) if len(seg) >= MIN_SEGMENT] or [norm_loose(q)]
@@ -712,7 +720,10 @@ def ground(findings: list[Finding], material: str, ignore: set[str] = frozenset(
     a short identifier that happens to exist should not vouch for an invented line.
     Whitespace is collapsed on both sides, so diff prefixes and indentation do not matter.
     """
-    haystack = norm_loose(material)
+    # Two views of the material: as is, and with the one-character diff prefix
+    # stripped from every line, so a quote spanning two lines of a diff is not
+    # broken by the "+" or "-" that sits between them once whitespace collapses.
+    haystack = norm_loose(material) + "\n" + norm_loose(strip_diff_prefixes(material))
     for f in findings:
         spans = [q for q in f.quotes if norm(q) not in ignore]
         if not spans:

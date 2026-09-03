@@ -133,6 +133,15 @@ class Ground(unittest.TestCase):
         f = dr.parse_findings("## Findings\n- [4/5] somewhere — the loop `for i, c := range m.rainPos {` copies c")
         self.assertEqual(f[0].quotes, ["for i, c := range m.rainPos {"])
 
+    def test_multiline_quote_across_diff_prefixes_grounds(self):
+        diff = "diff --git a/x.py b/x.py\n+++ b/x.py\n@@ -1,2 +1,4 @@\n+    if running is None:\n+        running = {}\n     for name in items:\n-        old()\n"
+        f = dr.parse_findings("## Findings\n- [4/5] x.py `if running is None: running = {}` — two lines quoted as one")
+        dr.ground(f, diff)
+        self.assertTrue(f[0].grounded)
+        g = dr.parse_findings("## Findings\n- [4/5] x.py `for name in items: old()` — context and removed line")
+        dr.ground(g, diff)
+        self.assertTrue(g[0].grounded)
+
     def test_attachment_names_do_not_ground(self):
         f = dr.parse_findings("## Findings\n- [5/5] `main.go` — vague")
         dr.ground(f, "### File: main.go\n" + MATERIAL, ignore={"main.go"})
